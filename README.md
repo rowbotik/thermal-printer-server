@@ -10,6 +10,7 @@ HTTP API server for ORGSTA T001 thermal label printer. Converts images to TSPL2 
 - ✅ HTTP REST API
 - ✅ Works on Raspberry Pi (Zero, 3, 4, 5)
 - ✅ No vendor drivers required (pure Python)
+- ✅ Perforated roll label support (gap detection disabled)
 
 ## Hardware Requirements
 
@@ -17,6 +18,7 @@ HTTP API server for ORGSTA T001 thermal label printer. Converts images to TSPL2 
 - Raspberry Pi (any model) or Linux computer
 - USB connection (printer must be on powered hub for Pi Zero)
 - Network connection (WiFi or Ethernet)
+- **Labels:** 4" x 159mm (101.6mm x 159mm) continuous roll with perforations
 
 ## Quick Start
 
@@ -71,33 +73,25 @@ curl -X POST http://thermal.local:8765/image \
   -d "$(base64 -i logo.png)"
 ```
 
+**Important:** Images should be sized to 812x1218 pixels (4x6 at 203 DPI). The printer inverts colors (black→white, white→black).
+
 ### POST /raw
 Send raw TSPL commands
 ```bash
 curl -X POST http://thermal.local:8765/raw -d "
-SIZE 4,6
+SIZE 101.6mm,159mm
+GAP 0,0
 CLS
 TEXT 50,50,\"3\",0,1,1,\"Hello World\"
 PRINT 1,1
 "
 ```
 
-## Key Discovery: TSPL BITMAP Format
+## Key Discoveries
 
-### The Problem
+### 1. TSPL BITMAP Format (from Chrome OS Driver)
 
-ORGSTA provides Linux drivers as x86_64 AppImages that don't work on ARM (Raspberry Pi). The PPD file references a proprietary filter:
-```
-*cupsFilter: "application/vnd.cups-raster 0 rastertosnailtspl-orgsta"
-```
-
-This filter converts CUPS raster data to TSPL2 bitmap format. Without it, direct image printing fails.
-
-### The Solution
-
-Reverse-engineered the TSPL BITMAP format from ORGSTA's Chrome OS driver (a Chrome extension that's pure JavaScript and architecture-independent).
-
-### TSPL BITMAP Format
+ORGSTA's Linux drivers are x86_64 only. Reverse-engineered the TSPL BITMAP format from their Chrome OS extension:
 
 ```
 BITMAP x,y,width_bytes,height,mode,raw_binary_data
@@ -114,22 +108,61 @@ BITMAP x,y,width_bytes,height,mode,raw_binary_data
 2. MSB first: bit 7 = leftmost pixel in byte
 3. 1 = print (black), 0 = no print (white)
 4. Send header as ASCII ending with comma, then raw bytes immediately
-5. No line breaks between header and data
+5. **Padding pixels must be 0 (white)** - not left as garbage
+6. **Image must be inverted** before processing (printer expects negative)
 
-**Example (Python):**
-```python
-# 16x8 black square
-# width_bytes = 16/8 = 2
-# Each row: 2 bytes = 16 bits
-header = "BITMAP 0,0,2,8,0,"  # Note the trailing comma
-data = bytes([0xFF, 0xFF]) * 8  # 8 rows of all-black
+### 2. Perforated Roll Labels
 
-with open('/dev/usb/lp0', 'wb') as f:
-    f.write(header.encode())
-    f.write(data)
+Roll labels with perforation holes trigger the printer's gap sensor, causing misalignment.
+
+**Solution:** Disable gap detection:
+```
+GAP 0,0
 ```
 
-### Chrome OS Driver Analysis
+This tells the printer to use continuous feed mode instead of looking for gaps between labels.
+
+### 3. Label Size Configuration
+
+Default: **4" x 159mm** (101.6mm x 159mm)
+
+Edit in `print_server.py`:
+```python
+LABEL_WIDTH_MM = 101.6   # 4 inches
+LABEL_HEIGHT_MM = 159    # Roll height
+```
+
+### 4. Image Positioning
+
+The printer has an unprintable top margin. Use Y_OFFSET to push content down:
+```python
+Y_OFFSET = 20   # 20 dots ≈ 2.5mm from top
+```
+
+## Mac Printing
+
+Resize image to proper label dimensions, then send:
+
+```bash
+# Resize template to 812x1218 (4x6 at 203 DPI)
+sips -z 1218 812 ~/Sync/My_ORGSTA_T001_Template.png --out /tmp/label.png
+
+# Send to printer
+curl -X POST http://thermal.local:8765/image -d "$(base64 -i /tmp/label.png)"
+```
+
+Or create a simple script:
+```bash
+#!/bin/bash
+# Save as /usr/local/bin/print-label
+INPUT="$1"
+TEMP="/tmp/label_$$.png"
+sips -z 1218 812 "$INPUT" --out "$TEMP"
+curl -X POST http://thermal.local:8765/image -d "$(base64 -i "$TEMP")"
+rm "$TEMP"
+```
+
+## Chrome OS Driver Analysis
 
 Downloaded from: https://orgsta.com/wp-content/uploads/2025/10/Chrome-OS.zip
 
@@ -168,18 +201,65 @@ sudo journalctl -u thermal-printer -f
 ```
 
 ### Images print as stripes/garbage
-The TSPL BITMAP format is very specific. If using custom code, ensure:
+The TSPL BITMAP format is very specific. Ensure:
 - Width is multiple of 8
 - Sending raw bytes, not hex strings
 - MSB first bit order
 - Header ends with comma, no newline before data
+- Padding pixels are 0 (white)
+
+### Label feeds to wrong position / stops mid-print
+Your labels likely have perforations that trigger the gap sensor.
+
+**Fix:** The server uses `GAP 0,0` which disables gap detection. If printing raw TSPL, add this before printing:
+```
+GAP 0,0
+```
+
+### Black line on right side of image
+Padding bytes were not set to white. Fixed in current version - extra pixels are always set to 0.
+
+### Image colors inverted (black↔white)
+The printer expects inverted images. The server handles this automatically - if printing raw, invert your image first:
+```python
+img = Image.eval(img, lambda x: 255 - x)
+```
+
+### Top margin too large / content cut off
+The printer has a physical unprintable area at the top. The server uses `Y_OFFSET = 20` to push content down. Adjust if needed.
 
 ## Files
 
-- `print_server.py` - Main HTTP server
+- `print_server.py` - Main HTTP server with all fixes
 - `install.sh` - Installation script
 - `install-on-boot.sh` - Pull latest from GitHub on boot (optional)
 - `README.md` - This file
+
+## Configuration
+
+Edit these values in `print_server.py` for your setup:
+
+```python
+# Label dimensions (mm)
+LABEL_WIDTH_MM = 101.6   # 4 inches
+LABEL_HEIGHT_MM = 159    # Adjust to your roll
+
+# Print positioning
+X_OFFSET = 0             # Adjust for left margin
+Y_OFFSET = 20            # Adjust for top margin
+
+# Printer device
+DEVICE = '/dev/usb/lp0'  # Update if different
+```
+
+## Pi Zero Notes
+
+The Pi Zero works great with this setup because:
+- Pure Python implementation (no x86_64 binaries needed)
+- Low resource usage
+- Powered USB hub handles printer power
+
+Install is identical to Pi 4.
 
 ## License
 
@@ -191,3 +271,4 @@ MIT - Use at your own risk for thermal printing adventures.
 - Format discovery: Chrome OS extension JavaScript
 - Implementation: Pure Python + Pillow
 - No proprietary binaries required
+- Tested on 4" x 159mm perforated roll labels
