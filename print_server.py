@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 Thermal Printer Server for ORGSTA T001
-Converts images to TSPL2 format and provides HTTP API
-
-Based on reverse-engineered Chrome OS driver analysis
+Fixed version with proper gap detection and roll label support
 """
 
 import http.server
@@ -17,31 +15,38 @@ from PIL import Image
 
 PORT = 8765
 
-def image_to_tspl(image_data, x=0, y=0, dither=True):
+# Label configuration for 4" x 159mm roll labels
+LABEL_WIDTH_MM = 101.6  # 4 inches
+LABEL_HEIGHT_MM = 159   # Roll height
+X_OFFSET = 0            # Adjust if left margin too big
+Y_OFFSET = 20           # Adjust for top margin
+
+def image_to_tspl(image_data, x=X_OFFSET, y=Y_OFFSET, dither=True):
     """
     Convert image to TSPL BITMAP command with raw binary data
-    Based on Chrome OS driver analysis
+    Fixed: proper padding, inverted colors, gap disabled for perforated labels
     """
     img = Image.open(io.BytesIO(image_data)).convert('L')
     
-    # Resize to fit 4x6 label at 203 DPI
-    img.thumbnail((812, 1218), Image.Resampling.LANCZOS)
-    
+    # Keep original size, don't resize
     width, height = img.size
     
-    # Apply dithering if requested
+    # Invert image (printer expects inverted)
+    img = Image.eval(img, lambda x: 255 - x)
+    
+    # Apply dithering
     if dither:
         img = img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
     else:
         img = img.point(lambda x: 0 if x < 128 else 255, '1')
     
-    # Ensure width is multiple of 8 (byte alignment required by TSPL)
-    padded_width = (width + 7) // 8 * 8
-    width_bytes = padded_width // 8
+    # Calculate proper byte width (TSPL requires byte alignment)
+    width_bytes = (width + 7) // 8
+    padded_width = width_bytes * 8
     
     pixels = list(img.getdata())
     
-    # Build bitmap bytes - MSB first, 1=black
+    # Build bitmap bytes - MSB first, padding pixels are white (0)
     bitmap_bytes = bytearray()
     
     for row in range(height):
@@ -50,25 +55,27 @@ def image_to_tspl(image_data, x=0, y=0, dither=True):
             byte_val = 0
             for bit in range(8):
                 pixel_col = byte_col + bit
-                if pixel_col < width:
+                if pixel_col < width:  # Real pixel
                     pixel_val = pixels[row_start + pixel_col]
-                    if pixel_val < 128:  # Black pixel
-                        byte_val |= (1 << (7 - bit))  # MSB first
+                    if pixel_val < 128:  # Black
+                        byte_val |= (1 << (7 - bit))
+                # Padding pixels stay 0 (white)
             bitmap_bytes.append(byte_val)
     
     header = f"BITMAP {x},{y},{width_bytes},{height},0,"
     
-    return header, bytes(bitmap_bytes), width, height
+    return header, bytes(bitmap_bytes)
 
 class LabelTemplates:
     @staticmethod
     def standard_shipping(order, customer, address, barcode=None, date_str=None):
-        """Standard 4x6 shipping label"""
+        """Standard shipping label"""
         if date_str is None:
             date_str = datetime.now().strftime('%Y-%m-%d')
         
         tspl = [
-            "SIZE 4,6",
+            f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
+            "GAP 0,0",  # Disable gap detection for perforated roll labels
             "CLS",
             "BOX 40,20,400,100,4",
             'TEXT 50,35,"3",0,1,1,"ATK FABRICATION CO."',
@@ -102,7 +109,8 @@ class LabelTemplates:
     def simple_text(lines, title="ATK FABRICATION"):
         """Simple text-only label"""
         tspl = [
-            "SIZE 4,6",
+            f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
+            "GAP 0,0",
             "CLS",
             f'TEXT 50,30,"3",0,1,1,"{title}"',
             "BAR 50,80,400,4",
@@ -119,7 +127,8 @@ class LabelTemplates:
     def packing_list(order, items, customer):
         """Internal packing list"""
         tspl = [
-            "SIZE 4,6",
+            f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
+            "GAP 0,0",
             "CLS",
             'TEXT 50,30,"3",0,1,1,"PACKING LIST"',
             f'TEXT 50,90,"2",0,1,1,"Order: #{order}"',
@@ -197,17 +206,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             elif self.path == '/image':
                 try:
                     image_data = base64.b64decode(body)
-                    header, bitmap_data, width, height = image_to_tspl(image_data)
+                    header, bitmap_data = image_to_tspl(image_data)
                     
                     output = bytearray()
-                    output.extend(b"SIZE 4,6\n")
+                    output.extend(f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm\n".encode())
+                    output.extend(b"GAP 0,0\n")  # Disable gap detection
                     output.extend(b"CLS\n")
                     output.extend(header.encode('ascii'))
                     output.extend(bitmap_data)
                     output.extend(b"\nPRINT 1,1\n")
                     
                     send_tspl_bytes(output)
-                    self.send_json({"status": "printed", "template": "image", "width": width, "height": height})
+                    self.send_json({"status": "printed", "template": "image"})
                 except Exception as e:
                     self.send_json({"error": f"Image processing failed: {str(e)}"}, 500)
             
@@ -221,7 +231,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        help_text = """Thermal Label Printer API - ATK Fabrication
+        help_text = f"""Thermal Label Printer API - ATK Fabrication
+
+LABEL SIZE: {LABEL_WIDTH_MM}mm x {LABEL_HEIGHT_MM}mm (4" x 159mm roll)
+GAP DETECTION: Disabled (for perforated roll labels)
 
 ENDPOINTS:
 POST /print      - Simple text (body: "Line 1\nLine 2")
@@ -235,7 +248,7 @@ curl -X POST http://thermal.local:8765/shipping -d "54321|Jane Doe|123 Oak Ave, 
 
 curl -X POST http://thermal.local:8765/packing -d "99999|John Smith|Widget A,Widget B,Widget C"
 
-Print image (base64 encoded):
+# Print image (base64 encoded)
 curl -X POST http://thermal.local:8765/image -d "$(base64 -i logo.png)"
 """
         self.wfile.write(help_text.encode())
@@ -243,4 +256,5 @@ curl -X POST http://thermal.local:8765/image -d "$(base64 -i logo.png)"
 if __name__ == '__main__':
     with socketserver.TCPServer(("0.0.0.0", PORT), Handler) as httpd:
         print(f"Label printer server on port {PORT}")
+        print(f"Label size: {LABEL_WIDTH_MM}mm x {LABEL_HEIGHT_MM}mm")
         httpd.serve_forever()
