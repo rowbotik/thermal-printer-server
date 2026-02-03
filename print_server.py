@@ -217,78 +217,409 @@ def print_raw():
     send_tspl(tspl)
     return jsonify({"status": "printed", "mode": "raw"})
 
-ADMIN_HTML = """<!DOCTYPE html>
+ADMIN_HTML = """
+<!doctype html>
 <html>
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Thermal Printer Admin</title>
-<style>
-body { font-family: system-ui, sans-serif; margin: 20px; max-width: 700px; background: #f5f5f5; }
-.card { background: white; padding: 16px; border-radius: 8px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-.row { margin-bottom: 12px; display: flex; align-items: center; }
-.row label { width: 140px; font-weight: 500; color: #555; }
-input, select { width: 120px; padding: 6px; border: 1px solid #ddd; border-radius: 4px; }
-button { padding: 8px 16px; margin: 4px; border: none; border-radius: 4px; background: #0066cc; color: white; cursor: pointer; }
-button:hover { background: #0052a3; }
-.status { padding: 12px; background: #e9ecef; border-radius: 4px; margin-top: 12px; font-family: monospace; font-size: 13px; }
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Thermal Printer Admin</title>
+  <style>
+    body { 
+      font-family: system-ui, -apple-system, sans-serif; 
+      margin: 20px; 
+      max-width: 900px; 
+      background: #f5f5f5;
+    }
+    h2 { margin-top: 0; }
+    .container { display: flex; gap: 20px; flex-wrap: wrap; }
+    .panel { 
+      background: white; 
+      padding: 16px; 
+      border-radius: 8px; 
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      flex: 1;
+      min-width: 300px;
+    }
+    .row { margin-bottom: 12px; display: flex; align-items: center; }
+    .row label { width: 140px; font-weight: 500; color: #555; }
+    input, select { 
+      width: 100px; 
+      padding: 6px; 
+      border: 1px solid #ddd; 
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    button { 
+      padding: 8px 16px; 
+      margin: 4px; 
+      border: none; 
+      border-radius: 4px; 
+      background: #0066cc; 
+      color: white; 
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button:hover { background: #0052a3; }
+    button.secondary { background: #6c757d; }
+    button.secondary:hover { background: #5a6268; }
+    button.danger { background: #dc3545; }
+    button.danger:hover { background: #c82333; }
+    .nudge-grid { 
+      display: grid; 
+      grid-template-columns: auto auto auto; 
+      gap: 8px; 
+      justify-content: start;
+      margin: 10px 0;
+    }
+    .status { 
+      padding: 12px; 
+      background: #e9ecef; 
+      border-radius: 4px; 
+      margin-top: 12px; 
+      font-family: monospace; 
+      font-size: 13px;
+    }
+    .status.ok { background: #d4edda; color: #155724; }
+    .status.error { background: #f8d7da; color: #721c24; }
+    .visualizer {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+      background: #fafafa;
+      border-radius: 8px;
+      margin: 15px 0;
+    }
+    .label-container {
+      position: relative;
+      background: white;
+      border: 2px solid #333;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .content-box {
+      position: absolute;
+      background: rgba(0, 102, 204, 0.15);
+      border: 2px dashed #0066cc;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      color: #0066cc;
+      transition: all 0.2s ease;
+    }
+    .content-box::after { content: "CONTENT"; font-weight: bold; }
+    .margin-label {
+      position: absolute;
+      font-size: 11px;
+      color: #666;
+      background: rgba(255,255,255,0.9);
+      padding: 2px 6px;
+      border-radius: 3px;
+      white-space: nowrap;
+    }
+    .margin-top { top: -25px; left: 50%; transform: translateX(-50%); }
+    .margin-bottom { bottom: -25px; left: 50%; transform: translateX(-50%); }
+    .margin-left { left: -50px; top: 50%; transform: translateY(-50%); }
+    .margin-right { right: -50px; top: 50%; transform: translateY(-50%); }
+    .arrow {
+      position: absolute;
+      font-size: 16px;
+      color: #dc3545;
+      font-weight: bold;
+      display: none;
+    }
+    .arrow.show { display: block; }
+    .arrow.up { top: -40px; left: 50%; transform: translateX(-50%); }
+    .arrow.down { bottom: -40px; left: 50%; transform: translateX(-50%); }
+    .arrow.left { left: -70px; top: 50%; transform: translateY(-50%); }
+    .arrow.right { right: -70px; top: 50%; transform: translateY(-50%); }
+    .measurements {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 15px;
+      padding: 10px;
+      background: white;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .measurement {
+      display: flex;
+      justify-content: space-between;
+      padding: 5px 10px;
+      background: #f8f9fa;
+      border-radius: 4px;
+    }
+    .measurement .label { color: #666; }
+    .measurement .value { font-weight: bold; color: #333; font-family: monospace; }
+    .measurement.warning .value { color: #dc3545; }
+    .legend {
+      font-size: 12px;
+      color: #666;
+      margin-top: 10px;
+      text-align: center;
+    }
+    .scale-info {
+      font-size: 11px;
+      color: #999;
+      text-align: center;
+      margin-top: 5px;
+    }
+  </style>
 </head>
 <body>
-<h2>Thermal Printer Admin</h2>
-<div class="card">
-<h3>Settings</h3>
-<div class="row"><label>X Offset:</label><input id="x_offset" type="number"></div>
-<div class="row"><label>Y Offset:</label><input id="y_offset" type="number"></div>
-<div class="row"><label>Width (mm):</label><input id="label_width_mm" type="number" step="0.1"></div>
-<div class="row"><label>Height (mm):</label><input id="label_height_mm" type="number" step="0.1"></div>
-<div class="row"><label>Gap (mm):</label><input id="gap_mm" type="number" step="0.1"></div>
-<button onclick="saveConfig()">Save</button>
-</div>
-<div class="card">
-<h3>Nudge</h3>
-<select id="step"><option value="0.5">0.5mm</option><option value="1" selected>1mm</option><option value="2">2mm</option></select>
-<button onclick="nudge('x', -getStep())">Left</button>
-<button onclick="nudge('x', getStep())">Right</button>
-<button onclick="nudge('y', -getStep())">Up</button>
-<button onclick="nudge('y', getStep())">Down</button>
-</div>
-<div class="card">
-<h3>Test Prints</h3>
-<button onclick="printTest('border')">Border</button>
-<button onclick="printTest('center')">Center</button>
-</div>
-<div id="status" class="status">Ready</div>
+  <h2>🖨️ Thermal Printer Admin</h2>
+  
+  <div class="container">
+    <div class="panel">
+      <h3>Settings</h3>
+      <div class="row"><label>X Offset (dots):</label><input id="x_offset" type="number" onchange="updateVisualizer()"></div>
+      <div class="row"><label>Y Offset (dots):</label><input id="y_offset" type="number" onchange="updateVisualizer()"></div>
+      <div class="row"><label>Label Width (mm):</label><input id="label_width_mm" type="number" step="0.1" onchange="updateVisualizer()"></div>
+      <div class="row"><label>Label Height (mm):</label><input id="label_height_mm" type="number" step="0.1" onchange="updateVisualizer()"></div>
+      <div class="row"><label>Gap (mm):</label><input id="gap_mm" type="number" step="0.1"></div>
+      <button onclick="saveConfig()">💾 Save Settings</button>
+      
+      <h3 style="margin-top: 20px;">Nudge</h3>
+      <div class="row">
+        <label>Step size:</label>
+        <select id="step">
+          <option value="0.5">0.5 mm (4 dots)</option>
+          <option value="1" selected>1.0 mm (8 dots)</option>
+          <option value="2">2.0 mm (16 dots)</option>
+        </select>
+      </div>
+      <div class="nudge-grid">
+        <div></div>
+        <button onclick="nudge('y', -getStep())">⬆️ Up</button>
+        <div></div>
+        <button onclick="nudge('x', -getStep())">⬅️ Left</button>
+        <div style="text-align:center; font-size: 12px; color: #666;">Move</div>
+        <button onclick="nudge('x', getStep())">Right ➡️</button>
+        <div></div>
+        <button onclick="nudge('y', getStep())">⬇️ Down</button>
+        <div></div>
+      </div>
+      
+      <h3 style="margin-top: 20px;">Test Prints</h3>
+      <button onclick="printTest('border')">📦 Border</button>
+      <button onclick="printTest('length')">📏 Length</button>
+      <button onclick="printTest('center')">🎯 Center</button>
+      <button onclick="printTest('values')" class="secondary">📋 Values</button>
+      
+      <h3 style="margin-top: 20px;">Service</h3>
+      <button onclick="restartService()" class="danger">🔄 Restart</button>
+    </div>
+    
+    <div class="panel">
+      <h3>Label Visualizer</h3>
+      <div class="visualizer">
+        <div class="label-container" id="labelContainer">
+          <div class="content-box" id="contentBox"></div>
+          <div class="margin-label margin-top" id="marginTop">Top: 0mm</div>
+          <div class="margin-label margin-bottom" id="marginBottom">Bottom: 0mm</div>
+          <div class="margin-label margin-left" id="marginLeft">Left: 0mm</div>
+          <div class="margin-label margin-right" id="marginRight">Right: 0mm</div>
+          <div class="arrow up" id="arrowUp">⬆️</div>
+          <div class="arrow down" id="arrowDown">⬇️</div>
+          <div class="arrow left" id="arrowLeft">⬅️</div>
+          <div class="arrow right" id="arrowRight">➡️</div>
+        </div>
+        <div class="scale-info" id="scaleInfo">Scale: Not to scale</div>
+      </div>
+      
+      <div class="measurements">
+        <div class="measurement" id="measTop">
+          <span class="label">Top Margin:</span>
+          <span class="value" id="valTop">0.0 mm</span>
+        </div>
+        <div class="measurement" id="measBottom">
+          <span class="label">Bottom Margin:</span>
+          <span class="value" id="valBottom">0.0 mm</span>
+        </div>
+        <div class="measurement" id="measLeft">
+          <span class="label">Left Margin:</span>
+          <span class="value" id="valLeft">0.0 mm</span>
+        </div>
+        <div class="measurement" id="measRight">
+          <span class="label">Right Margin:</span>
+          <span class="value" id="valRight">0.0 mm</span>
+        </div>
+      </div>
+      
+      <div class="legend">
+        Solid line = Label edge | Dashed blue = Content area<br>
+        X Offset shifts content LEFT/RIGHT | Y Offset shifts content UP/DOWN
+      </div>
+    </div>
+  </div>
+
+  <div id="status" class="status">Ready</div>
+
 <script>
+const DOTS_PER_MM = 8;
+
+function dotsToMm(dots) { return dots / DOTS_PER_MM; }
+function mmToDots(mm) { return Math.round(mm * DOTS_PER_MM); }
+
 async function loadConfig(){
-  const r = await fetch("/api/config");
-  const c = await r.json();
-  ["x_offset","y_offset","label_width_mm","label_height_mm","gap_mm"].forEach(k=>{
-    document.getElementById(k).value = c[k];
-  });
+  try {
+    const r = await fetch('/api/config');
+    const c = await r.json();
+    ['x_offset','y_offset','label_width_mm','label_height_mm','gap_mm'].forEach(k=>{
+      const el = document.getElementById(k);
+      if(el) el.value = c[k];
+    });
+    updateVisualizer();
+    setStatus('Config loaded');
+  } catch(e) {
+    setStatus('Error: ' + e.message, true);
+  }
 }
-function getStep(){ return parseFloat(document.getElementById("step").value); }
-function setStatus(msg){ document.getElementById("status").textContent = new Date().toLocaleTimeString() + " - " + msg; }
+
+function getStep(){ return parseFloat(document.getElementById('step').value); }
+
+function setStatus(msg, isError=false){
+  const el = document.getElementById('status');
+  el.textContent = new Date().toLocaleTimeString() + ' - ' + msg;
+  el.className = 'status ' + (isError ? 'error' : 'ok');
+}
+
+function updateVisualizer() {
+  const xOffset = parseInt(document.getElementById('x_offset').value) || 0;
+  const yOffset = parseInt(document.getElementById('y_offset').value) || 0;
+  const labelW = parseFloat(document.getElementById('label_width_mm').value) || 80;
+  const labelH = parseFloat(document.getElementById('label_height_mm').value) || 40;
+  
+  const maxDisplayW = 300;
+  const scale = Math.min(maxDisplayW / labelW, 6);
+  const displayW = labelW * scale;
+  const displayH = labelH * scale;
+  
+  const contentW = displayW * 0.7;
+  const contentH = displayH * 0.7;
+  
+  const xOffsetPx = (xOffset / DOTS_PER_MM) * scale;
+  const yOffsetPx = (yOffset / DOTS_PER_MM) * scale;
+  
+  const contentLeft = (displayW - contentW) / 2 + xOffsetPx;
+  const contentTop = (displayH - contentH) / 2 + yOffsetPx;
+  
+  const container = document.getElementById('labelContainer');
+  const contentBox = document.getElementById('contentBox');
+  
+  container.style.width = displayW + 'px';
+  container.style.height = displayH + 'px';
+  
+  contentBox.style.width = contentW + 'px';
+  contentBox.style.height = contentH + 'px';
+  contentBox.style.left = contentLeft + 'px';
+  contentBox.style.top = contentTop + 'px';
+  
+  const leftMargin = dotsToMm(xOffset);
+  const contentW_mm = (contentW / scale);
+  const rightMargin = labelW - contentW_mm - leftMargin;
+  const topMargin = dotsToMm(yOffset);
+  const contentH_mm = (contentH / scale);
+  const bottomMargin = labelH - contentH_mm - topMargin;
+  
+  document.getElementById('marginTop').textContent = 'Top: ' + topMargin.toFixed(1) + 'mm';
+  document.getElementById('marginBottom').textContent = 'Bottom: ' + bottomMargin.toFixed(1) + 'mm';
+  document.getElementById('marginLeft').textContent = 'Left: ' + leftMargin.toFixed(1) + 'mm';
+  document.getElementById('marginRight').textContent = 'Right: ' + rightMargin.toFixed(1) + 'mm';
+  
+  document.getElementById('valTop').textContent = topMargin.toFixed(1) + ' mm';
+  document.getElementById('valBottom').textContent = bottomMargin.toFixed(1) + ' mm';
+  document.getElementById('valLeft').textContent = leftMargin.toFixed(1) + ' mm';
+  document.getElementById('valRight').textContent = rightMargin.toFixed(1) + ' mm';
+  
+  document.getElementById('measTop').classList.toggle('warning', topMargin < 0);
+  document.getElementById('measBottom').classList.toggle('warning', bottomMargin < 0);
+  document.getElementById('measLeft').classList.toggle('warning', leftMargin < 0);
+  document.getElementById('measRight').classList.toggle('warning', rightMargin < 0);
+  
+  document.getElementById('arrowUp').classList.toggle('show', yOffset < 0);
+  document.getElementById('arrowDown').classList.toggle('show', yOffset > 0);
+  document.getElementById('arrowLeft').classList.toggle('show', xOffset < 0);
+  document.getElementById('arrowRight').classList.toggle('show', xOffset > 0);
+  
+  document.getElementById('scaleInfo').textContent = 
+    \`Scale: ${scale.toFixed(1)}px/mm | Label: ${labelW.toFixed(1)}×${labelH.toFixed(1)}mm\`;
+}
+
 async function saveConfig(){
-  const body = {x_offset: parseInt(x_offset.value), y_offset: parseInt(y_offset.value), label_width_mm: parseFloat(label_width_mm.value), label_height_mm: parseFloat(label_height_mm.value), gap_mm: parseFloat(gap_mm.value)};
-  const r = await fetch("/api/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-  setStatus(r.ok ? "Saved" : "Error");
-  if(r.ok) loadConfig();
+  const body = {
+    x_offset: parseInt(document.getElementById('x_offset').value, 10),
+    y_offset: parseInt(document.getElementById('y_offset').value, 10),
+    label_width_mm: parseFloat(document.getElementById('label_width_mm').value),
+    label_height_mm: parseFloat(document.getElementById('label_height_mm').value),
+    gap_mm: parseFloat(document.getElementById('gap_mm').value)
+  };
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await r.json();
+    if(r.ok) {
+      setStatus('Settings saved');
+      updateVisualizer();
+    } else {
+      setStatus('Save failed: ' + (data.error||'unknown'), true);
+    }
+  } catch(e) {
+    setStatus('Error: ' + e.message, true);
+  }
 }
+
 async function nudge(axis, mm){
-  const r = await fetch("/api/nudge", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({axis, mm})});
-  const data = await r.json();
-  setStatus(r.ok ? `Nudged ${axis} by ${mm}mm` : "Error");
-  if(r.ok) loadConfig();
+  try {
+    const r = await fetch('/api/nudge', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({axis, mm})
+    });
+    const data = await r.json();
+    if(r.ok) {
+      document.getElementById('x_offset').value = data.x_offset;
+      document.getElementById('y_offset').value = data.y_offset;
+      updateVisualizer();
+      setStatus(\`Nudged ${axis} by ${mm}mm → X:${data.x_offset} Y:${data.y_offset} dots\`);
+    } else {
+      setStatus('Nudge failed: ' + (data.error||'unknown'), true);
+    }
+  } catch(e) {
+    setStatus('Error: ' + e.message, true);
+  }
 }
+
 async function printTest(kind){
-  const r = await fetch("/api/print-test/" + kind, {method: "POST"});
-  setStatus(r.ok ? "Print sent" : "Error");
+  try {
+    const r = await fetch('/api/print-test/' + kind, {method: 'POST'});
+    setStatus(r.ok ? 'Print sent' : 'Print error');
+  } catch(e) {
+    setStatus('Error: ' + e.message, true);
+  }
 }
+
+async function restartService(){
+  if(!confirm('Restart the print service?')) return;
+  try {
+    const r = await fetch('/api/restart', {method: 'POST'});
+    const data = await r.json();
+    setStatus(r.ok && data.ok ? 'Service restarted' : ('Failed: '+(data.error||'unknown')), !r.ok || !data.ok);
+  } catch(e) {
+    setStatus('Error: ' + e.message, true);
+  }
+}
+
 loadConfig();
 </script>
 </body>
-</html>"""
+</html>
+"""
 
 @app.route("/admin")
 def admin_ui():
