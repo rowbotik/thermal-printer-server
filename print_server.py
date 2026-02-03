@@ -296,15 +296,20 @@ def api_print_template():
         
         # Clamp Y offset to valid range (0 = top edge, can't be negative)
         y_pos = max(0, int(cfg['y_offset']))
-        header = f"BITMAP {cfg['x_offset']},{y_pos},{width_bytes},{height},0,"
+        # Use X=0 in BITMAP because SHIFT command handles X offset globally
+        header = f"BITMAP 0,{y_pos},{width_bytes},{height},0,"
         
         output = bytearray()
         output.extend(f"SIZE {cfg['label_width_mm']}mm,{cfg['label_height_mm']}mm\n".encode())
         output.extend(f"GAP {cfg['gap_mm']}mm,0mm\n".encode())
+        output.extend(b"DENSITY 8\n")
+        output.extend(b"SPEED 4\n")
+        output.extend(b"DIRECTION 1\n")
+        output.extend(f"SHIFT {int(cfg['x_offset'])}\n".encode())  # X offset via SHIFT command
         output.extend(b"CLS\n")
         output.extend(header.encode('ascii'))
         output.extend(bytes(bitmap_bytes))
-        output.extend(b"\nPRINT 1,1\n")
+        output.extend(b"\nPRINT 1\n")
         
         send_tspl_bytes(output)
         return jsonify({"ok": True, "printed": "template"})
