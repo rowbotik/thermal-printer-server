@@ -332,19 +332,60 @@ def print_raw():
 
 @app.route("/image", methods=["POST"])
 def print_image():
+    """Print image with proper label feeding for Mac/remote printing"""
     try:
         body = request.get_data()
         image_data = base64.b64decode(body)
         cfg = load_config()
-        header, bitmap_data = image_to_tspl(image_data, x=cfg['x_offset'], y=cfg['y_offset'])
         
+        # Resize image to fit label
+        img = Image.open(io.BytesIO(image_data)).convert("L")
+        label_width = int(cfg['label_width_mm'] * DOTS_PER_MM)  # 8 dots/mm at 203 DPI
+        label_height = int(cfg['label_height_mm'] * DOTS_PER_MM)
+        
+        # Resize to exact label size (no centering - use offset settings)
+        img = img.resize((label_width, label_height), Image.Resampling.LANCZOS)
+        
+        # Invert and dither
+        img = Image.eval(img, lambda px: 255 - px)
+        img = img.convert("1", dither=Image.Dither.FLOYDSTEINBERG)
+        
+        # Convert to bitmap
+        width, height = img.size
+        width_bytes = (width + 7) // 8
+        padded_width = width_bytes * 8
+        pixels = list(img.getdata())
+        bitmap_bytes = bytearray()
+        
+        for row in range(height):
+            row_start = row * width
+            for byte_col in range(0, padded_width, 8):
+                byte_val = 0
+                for bit in range(8):
+                    pixel_col = byte_col + bit
+                    if pixel_col < width:
+                        pixel_val = pixels[row_start + pixel_col]
+                        if pixel_val < 128:
+                            byte_val |= (1 << (7 - bit))
+                bitmap_bytes.append(byte_val)
+        
+        # Build TSPL with proper feeding
         output = bytearray()
+        # Set label size and gap (critical for alignment)
         output.extend(f"SIZE {cfg['label_width_mm']}mm,{cfg['label_height_mm']}mm\n".encode())
         output.extend(f"GAP {cfg['gap_mm']}mm,0mm\n".encode())
+        output.extend(b"DENSITY 8\n")
+        output.extend(b"SPEED 4\n")
+        output.extend(b"DIRECTION 1\n")
+        output.extend(f"SHIFT {int(cfg['x_offset'])}\n".encode())
         output.extend(b"CLS\n")
-        output.extend(header.encode('ascii'))
-        output.extend(bitmap_data)
-        output.extend(b"\nPRINT 1,1\n")
+        
+        # Add bitmap at Y offset
+        bitmap_header = f"BITMAP 0,{int(cfg['y_offset'])},{width_bytes},{height},0,"
+        output.extend(bitmap_header.encode('ascii'))
+        output.extend(bytes(bitmap_bytes))
+        
+        output.extend(b"\nPRINT 1\n")
         
         send_tspl_bytes(output)
         return jsonify({"status": "printed", "template": "image"})
@@ -885,7 +926,28 @@ async function nudge(axis, mm){
 async function printTest(kind){
   try {
     const r = await fetch('/api/print-test/' + kind, {method: 'POST'});
-    setStatus(r.ok ? 'Print sent' : 'Print error');
+    if (r.ok) {
+      addCommand('Printed: ' + kind);
+      setStatus('Print sent');
+    } else {
+      setStatus('Print error');
+    }
+  } catch(e) {
+    setStatus('Error: ' + e.message, true);
+  }
+}
+
+async function printTemplate(){
+  try {
+    setStatus('Converting PDF...');
+    const r = await fetch('/api/print-template', {method: 'POST'});
+    const data = await r.json();
+    if (r.ok && data.ok) {
+      addCommand('Printed: Template PDF');
+      setStatus('Template printed');
+    } else {
+      setStatus('Error: ' + (data.error || 'Unknown'), true);
+    }
   } catch(e) {
     setStatus('Error: ' + e.message, true);
   }
