@@ -563,6 +563,33 @@ ADMIN_HTML = """
         Solid line = Label edge | Dashed blue = Content area<br>
         X Offset shifts content LEFT/RIGHT | Y Offset shifts content UP/DOWN
       </div>
+      
+      <div class="panel" style="margin-top: 15px;">
+        <h3>🧭 Orientation</h3>
+        <div class="row">
+          <label><input type="checkbox" id="flip_x" onchange="toggleFlipX()"> Flip X (mirror left/right)</label>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="flip_y" onchange="toggleFlipY()"> Flip Y (mirror up/down)</label>
+        </div>
+        <div class="row">
+          <label>Rotate visualizer:</label>
+          <select id="vizRotation" onchange="updateVisualizer()">
+            <option value="0" selected>0° (normal)</option>
+            <option value="90">90° clockwise</option>
+            <option value="-90">90° counter-clockwise</option>
+            <option value="180">180° (upside down)</option>
+          </select>
+        </div>
+      </div>
+      
+      <div class="panel" style="margin-top: 15px;">
+        <h3>📜 Command History</h3>
+        <div id="commandHistory" style="max-height: 200px; overflow-y: auto; font-size: 12px; background: #f8f9fa; padding: 10px; border-radius: 6px; min-height: 100px;">
+          <div style="color: #999; text-align: center; padding: 20px;">History will appear here</div>
+        </div>
+        <button onclick="clearHistory()" class="secondary" style="margin-top: 10px; width: 100%;">Clear History</button>
+      </div>
     </div>
   </div>
 
@@ -598,18 +625,15 @@ function clearHistory() {
   renderHistory();
 }
 
-async function saveOrientation() {
+function toggleFlipX() {
   flipX = document.getElementById('flip_x').checked;
+  addCommand('Flip X: ' + (flipX ? 'ON' : 'OFF'));
+  updateVisualizer();
+}
+
+function toggleFlipY() {
   flipY = document.getElementById('flip_y').checked;
-  const cfg = await (await fetch('/api/config')).json();
-  cfg.flip_x = flipX;
-  cfg.flip_y = flipY;
-  await fetch('/api/config', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(cfg)
-  });
-  addCommand(`Orientation: ${flipX ? 'X-flipped' : 'X-normal'}, ${flipY ? 'Y-flipped' : 'Y-normal'}`);
+  addCommand('Flip Y: ' + (flipY ? 'ON' : 'OFF'));
   updateVisualizer();
 }
 
@@ -625,6 +649,17 @@ async function loadConfig(){
       const el = document.getElementById(k);
       if(el) el.value = c[k];
     });
+    // Load flip settings if they exist
+    if (c.flip_x !== undefined) {
+      flipX = c.flip_x;
+      const flipXEl = document.getElementById('flip_x');
+      if (flipXEl) flipXEl.checked = flipX;
+    }
+    if (c.flip_y !== undefined) {
+      flipY = c.flip_y;
+      const flipYEl = document.getElementById('flip_y');
+      if (flipYEl) flipYEl.checked = flipY;
+    }
     updateVisualizer();
     setStatus('Config loaded');
   } catch(e) {
@@ -660,14 +695,13 @@ function updateVisualizer() {
   const yOffsetPx = (yOffset / DOTS_PER_MM) * scale;
   
   // Position from origin (top-left)
-  // FLIPPED: visual shows what actually happens on paper
-  // X positive = content shifts LEFT on paper (opposite of visual right)
+  // At 0,0: content sits at default margin
   const defaultMarginPx = (50 / DOTS_PER_MM) * scale; // 50 dots default margin
-  // Apply flip transformations
-  const effectiveXOffset = flipX ? -xOffsetPx : xOffsetPx;
-  const effectiveYOffset = flipY ? -yOffsetPx : yOffsetPx;
-  const contentLeft = defaultMarginPx - effectiveXOffset;
-  const contentTop = defaultMarginPx + effectiveYOffset;
+  
+  // X positive = shift RIGHT (increase left margin visually)
+  // Y positive = shift DOWN (increase top margin visually)
+  const contentLeft = defaultMarginPx + xOffsetPx;
+  const contentTop = defaultMarginPx + yOffsetPx;
   
   const container = document.getElementById('labelContainer');
   const contentBox = document.getElementById('contentBox');
@@ -686,8 +720,8 @@ function updateVisualizer() {
   if (axisX) axisX.style.transform = 'translateY(' + Math.max(0, yOffsetPx) + 'px)';
   if (axisY) axisY.style.transform = 'translateX(' + Math.max(0, xOffsetPx) + 'px)';
   
-  // FLIPPED: X positive = content moves LEFT, so left margin shrinks
-  const leftMargin = dotsToMm(-xOffset);  // NEGATED
+  // Margins: positive offset = content moves away from that edge
+  const leftMargin = dotsToMm(xOffset) + 6.25;  // 50 dots default margin
   const contentW_mm = (contentW / scale);
   const rightMargin = labelW - contentW_mm - leftMargin;
   const topMargin = dotsToMm(yOffset);
@@ -711,9 +745,8 @@ function updateVisualizer() {
   
   document.getElementById('arrowUp').classList.toggle('show', yOffset < 0);
   document.getElementById('arrowDown').classList.toggle('show', yOffset > 0);
-  // FLIPPED: X positive = content moves LEFT on paper
-  document.getElementById('arrowLeft').classList.toggle('show', xOffset > 0);
-  document.getElementById('arrowRight').classList.toggle('show', xOffset < 0);
+  document.getElementById('arrowLeft').classList.toggle('show', xOffset < 0);
+  document.getElementById('arrowRight').classList.toggle('show', xOffset > 0);
   
   document.getElementById('scaleInfo').textContent = 
     `Scale: ${scale.toFixed(1)}px/mm | Label: ${labelW.toFixed(1)}×${labelH.toFixed(1)}mm`;
