@@ -17,9 +17,10 @@ PORT = 8765
 
 # Label configuration for 4" x 159mm roll labels
 LABEL_WIDTH_MM = 101.6  # 4 inches
-LABEL_HEIGHT_MM = 159   # Roll height
-X_OFFSET = 0            # Adjust if left margin too big
-Y_OFFSET = 20           # Adjust for top margin
+LABEL_HEIGHT_MM = 152.4 # lock length tuning baseline (4x6)
+GAP_MM = 2.5           # lock gap baseline
+X_OFFSET = 32          # +2mm more left shift
+Y_OFFSET = 0           # neutral while restoring known-good tear behavior
 
 def image_to_tspl(image_data, x=X_OFFSET, y=Y_OFFSET, dither=True):
     """
@@ -75,7 +76,7 @@ class LabelTemplates:
         
         tspl = [
             f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
-            "GAP 0,0",  # Disable gap detection for perforated roll labels
+            f"GAP {GAP_MM}mm,0mm",  # Enable gap sensing for roll labels
             "CLS",
             "BOX 40,20,400,100,4",
             'TEXT 50,35,"3",0,1,1,"ATK FABRICATION CO."',
@@ -110,7 +111,7 @@ class LabelTemplates:
         """Simple text-only label"""
         tspl = [
             f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
-            "GAP 0,0",
+            f"GAP {GAP_MM}mm,0mm",
             "CLS",
             f'TEXT 50,30,"3",0,1,1,"{title}"',
             "BAR 50,80,400,4",
@@ -128,7 +129,7 @@ class LabelTemplates:
         """Internal packing list"""
         tspl = [
             f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
-            "GAP 0,0",
+            f"GAP {GAP_MM}mm,0mm",
             "CLS",
             'TEXT 50,30,"3",0,1,1,"PACKING LIST"',
             f'TEXT 50,90,"2",0,1,1,"Order: #{order}"',
@@ -210,7 +211,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     
                     output = bytearray()
                     output.extend(f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm\n".encode())
-                    output.extend(b"GAP 0,0\n")  # Disable gap detection
+                    output.extend(f"GAP {GAP_MM}mm,0mm\n".encode())  # Enable gap sensing
                     output.extend(b"CLS\n")
                     output.extend(header.encode('ascii'))
                     output.extend(bitmap_data)
@@ -233,8 +234,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         help_text = f"""Thermal Label Printer API - ATK Fabrication
 
-LABEL SIZE: {LABEL_WIDTH_MM}mm x {LABEL_HEIGHT_MM}mm (4" x 159mm roll)
-GAP DETECTION: Disabled (for perforated roll labels)
+LABEL SIZE: {LABEL_WIDTH_MM}mm x {LABEL_HEIGHT_MM}mm (4" x 6" roll, tuned)
+GAP DETECTION: Enabled ({GAP_MM}mm gap sensor for roll labels)
 
 ENDPOINTS:
 POST /print      - Simple text (body: "Line 1\nLine 2")
