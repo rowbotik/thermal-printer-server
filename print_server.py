@@ -188,6 +188,36 @@ def api_nudge():
 @app.route("/api/print-test/<test_type>", methods=["POST"])
 def api_print_test(test_type):
     cfg = load_config()
+    
+    if test_type == "direction":
+        # Print direction markers at corners
+        tspl = LabelTemplates.tspl_header(cfg)
+        tspl += f'TEXT 10,10,"2",0,1,1,"<<< LEFT EDGE"
+'
+        tspl += f'TEXT 600,10,"2",0,1,1,"RIGHT EDGE >>>"
+'
+        tspl += f'TEXT 10,1100,"2",0,1,1,"<<< LEFT EDGE"
+'
+        tspl += f'TEXT 600,1100,"2",0,1,1,"RIGHT EDGE >>>"
+'
+        tspl += f'TEXT 300,550,"3",0,1,1,"^ TOP ^"
+'
+        tspl += f'TEXT 300,1050,"3",0,1,1,"v BOTTOM v"
+'
+        tspl += f'BAR 10,50,800,2
+'
+        tspl += f'BAR 10,1150,800,2
+'
+        tspl += f'BAR 50,10,2,1200
+'
+        tspl += f'BAR 750,10,2,1200
+'
+        tspl += "PRINT 1
+"
+        send_tspl(tspl)
+        return jsonify({"ok": True, "test": "direction"})
+    elif test_type == "border":
+    cfg = load_config()
     if test_type == "border":
         send_tspl(LabelTemplates.border_test(cfg))
     elif test_type == "center":
@@ -195,6 +225,33 @@ def api_print_test(test_type):
     else:
         return jsonify({"error": "Unknown test type"}), 400
     return jsonify({"ok": True, "test": test_type})
+
+@app.route("/api/feed", methods=["POST"])
+def api_feed():
+    """Feed or reset label position"""
+    try:
+        action = request.get_json().get('action', 'feed')
+        cfg = load_config()
+        if action == 'reset':
+            # Reset to home position
+            tspl = f"SIZE {cfg['label_width_mm']} mm,{cfg['label_height_mm']} mm
+GAP {cfg['gap_mm']} mm,0
+HOME
+CLS
+PRINT 1
+"
+            send_tspl(tspl)
+            return jsonify({"ok": True, "action": "reset"})
+        else:
+            # Feed forward one label
+            tspl = f"SIZE {cfg['label_width_mm']} mm,{cfg['label_height_mm']} mm
+GAP {cfg['gap_mm']} mm,0
+FEED {int(cfg['label_height_mm'])}
+"
+            send_tspl(tspl)
+            return jsonify({"ok": True, "action": "feed"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/api/restart", methods=["POST"])
 def api_restart():
@@ -462,13 +519,17 @@ ADMIN_HTML = """
       </div>
       
       <h3 style="margin-top: 20px;">Test Prints</h3>
+      <button onclick="printTest('direction')">🧭 Direction Test</button>
       <button onclick="printTest('border')">📦 Border</button>
-      <button onclick="printTest('length')">📏 Length</button>
       <button onclick="printTest('center')">🎯 Center</button>
       <button onclick="printTest('values')" class="secondary">📋 Values</button>
       
+      <h3 style="margin-top: 20px;">Feed Control</h3>
+      <button onclick="feedControl('feed')">⬇️ Feed Forward</button>
+      <button onclick="feedControl('reset')" class="danger">🏠 Reset Position</button>
+      
       <h3 style="margin-top: 20px;">Service</h3>
-      <button onclick="restartService()" class="danger">🔄 Restart</button>
+      <button onclick="restartService()" class="secondary">🔄 Restart Server</button>
     </div>
     
     <div class="panel">
@@ -571,9 +632,10 @@ function updateVisualizer() {
   const yOffsetPx = (yOffset / DOTS_PER_MM) * scale;
   
   // Position from origin (top-left)
-  // At 0,0: content box starts at default margin (50 dots = ~6mm)
+  // FLIPPED: visual shows what actually happens on paper
+  // X positive = content shifts LEFT on paper (opposite of visual right)
   const defaultMarginPx = (50 / DOTS_PER_MM) * scale; // 50 dots default margin
-  const contentLeft = defaultMarginPx + xOffsetPx;
+  const contentLeft = defaultMarginPx - xOffsetPx;  // NEGATED - matches reality
   const contentTop = defaultMarginPx + yOffsetPx;
   
   const container = document.getElementById('labelContainer');
@@ -593,7 +655,8 @@ function updateVisualizer() {
   if (axisX) axisX.style.transform = 'translateY(' + Math.max(0, yOffsetPx) + 'px)';
   if (axisY) axisY.style.transform = 'translateX(' + Math.max(0, xOffsetPx) + 'px)';
   
-  const leftMargin = dotsToMm(xOffset);
+  // FLIPPED: X positive = content moves LEFT, so left margin shrinks
+  const leftMargin = dotsToMm(-xOffset);  // NEGATED
   const contentW_mm = (contentW / scale);
   const rightMargin = labelW - contentW_mm - leftMargin;
   const topMargin = dotsToMm(yOffset);
@@ -617,8 +680,9 @@ function updateVisualizer() {
   
   document.getElementById('arrowUp').classList.toggle('show', yOffset < 0);
   document.getElementById('arrowDown').classList.toggle('show', yOffset > 0);
-  document.getElementById('arrowLeft').classList.toggle('show', xOffset < 0);
-  document.getElementById('arrowRight').classList.toggle('show', xOffset > 0);
+  // FLIPPED: X positive = content moves LEFT on paper
+  document.getElementById('arrowLeft').classList.toggle('show', xOffset > 0);
+  document.getElementById('arrowRight').classList.toggle('show', xOffset < 0);
   
   document.getElementById('scaleInfo').textContent = 
     `Scale: ${scale.toFixed(1)}px/mm | Label: ${labelW.toFixed(1)}×${labelH.toFixed(1)}mm`;
@@ -645,6 +709,20 @@ async function saveConfig(){
     } else {
       setStatus('Save failed: ' + (data.error||'unknown'), true);
     }
+  } catch(e) {
+    setStatus('Error: ' + e.message, true);
+  }
+}
+
+async function feedControl(action){
+  try {
+    const r = await fetch('/api/feed', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action})
+    });
+    const data = await r.json();
+    setStatus(r.ok ? (action === 'reset' ? 'Position reset' : 'Label fed') : 'Error');
   } catch(e) {
     setStatus('Error: ' + e.message, true);
   }
