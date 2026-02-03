@@ -358,6 +358,15 @@ def print_image():
         label_width_dots = int(cfg['label_width_mm'] * DOTS_PER_MM)  # 8 dots/mm at 203 DPI
         label_height_dots = int(cfg['label_height_mm'] * DOTS_PER_MM)
         
+        # Auto-crop white space from top and bottom to maximize content area
+        # Get bounding box of non-white content
+        # Invert temporarily for bbox (bbox finds black pixels)
+        img_temp = Image.eval(img, lambda px: 255 - px)
+        bbox = img_temp.getbbox()
+        if bbox:
+            # Crop to content, keeping full width
+            img = img.crop((0, bbox[1], img.width, bbox[3]))
+        
         # Resize to fit within label if too large (maintain aspect ratio)
         img.thumbnail((label_width_dots, label_height_dots), Image.Resampling.LANCZOS)
         
