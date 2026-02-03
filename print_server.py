@@ -757,30 +757,30 @@ function setStatus(msg, isError=false){
 function updateVisualizer() {
   const xOffset = parseInt(document.getElementById('x_offset').value) || 0;
   const yOffset = parseInt(document.getElementById('y_offset').value) || 0;
-  const labelW = parseFloat(document.getElementById('label_width_mm').value) || 80;
-  const labelH = parseFloat(document.getElementById('label_height_mm').value) || 40;
+  const labelW = parseFloat(document.getElementById('label_width_mm').value) || 101.6;
+  const labelH = parseFloat(document.getElementById('label_height_mm').value) || 152.4;
   
-  const maxDisplayW = 300;
-  const scale = Math.min(maxDisplayW / labelW, 6);
-  const displayW = labelW * scale;
-  const displayH = labelH * scale;
+  // Fixed display size
+  const displayW = 280;
+  const displayH = 420;
+  const scaleX = displayW / labelW;
+  const scaleY = displayH / labelH;
   
-  // Content box size (represents printable area, smaller than label)
-  const contentW = displayW * 0.6;
-  const contentH = displayH * 0.6;
+  // Content box is smaller than label (represents your image)
+  const contentW = displayW * 0.7;
+  const contentH = displayH * 0.7;
   
-  // Convert offsets to pixels
-  const xOffsetPx = (xOffset / DOTS_PER_MM) * scale;
-  const yOffsetPx = (yOffset / DOTS_PER_MM) * scale;
+  // Convert offset (dots) to display pixels
+  // At 0,0: content is centered
+  // X+ moves right, X- moves left
+  // Y+ moves down, Y- moves up
+  const maxOffsetDots = 200; // Show +/- 200 dots range
+  const xPx = (xOffset / maxOffsetDots) * (displayW * 0.25); // Scale to show movement
+  const yPx = (yOffset / maxOffsetDots) * (displayH * 0.25);
   
-  // Position from origin (top-left)
-  // At 0,0: content sits at default margin
-  const defaultMarginPx = (50 / DOTS_PER_MM) * scale; // 50 dots default margin
-  
-  // X positive = shift RIGHT (increase left margin visually)
-  // Y positive = shift DOWN (increase top margin visually)
-  const contentLeft = defaultMarginPx + xOffsetPx;
-  const contentTop = defaultMarginPx + yOffsetPx;
+  // Center position + offset
+  const contentLeft = (displayW - contentW) / 2 + xPx;
+  const contentTop = (displayH - contentH) / 2 + yPx;
   
   const container = document.getElementById('labelContainer');
   const contentBox = document.getElementById('contentBox');
@@ -793,42 +793,32 @@ function updateVisualizer() {
   contentBox.style.left = contentLeft + 'px';
   contentBox.style.top = contentTop + 'px';
   
-  // Update axis labels to show offset direction
-  const axisX = container.querySelector('.axis-x');
-  const axisY = container.querySelector('.axis-y');
-  if (axisX) axisX.style.transform = 'translateY(' + Math.max(0, yOffsetPx) + 'px)';
-  if (axisY) axisY.style.transform = 'translateX(' + Math.max(0, xOffsetPx) + 'px)';
+  // Update margin labels to show actual offset
+  const xMm = (xOffset / DOTS_PER_MM).toFixed(1);
+  const yMm = (yOffset / DOTS_PER_MM).toFixed(1);
   
-  // Margins: positive offset = content moves away from that edge
-  const leftMargin = dotsToMm(xOffset) + 6.25;  // 50 dots default margin
-  const contentW_mm = (contentW / scale);
-  const rightMargin = labelW - contentW_mm - leftMargin;
-  const topMargin = dotsToMm(yOffset);
-  const contentH_mm = (contentH / scale);
-  const bottomMargin = labelH - contentH_mm - topMargin;
+  document.getElementById('marginLeft').textContent = 'X: ' + xOffset + ' dots (' + xMm + 'mm)';
+  document.getElementById('marginTop').textContent = 'Y: ' + yOffset + ' dots (' + yMm + 'mm)';
+  document.getElementById('marginRight').textContent = '';
+  document.getElementById('marginBottom').textContent = '';
   
-  document.getElementById('marginTop').textContent = 'Top: ' + topMargin.toFixed(1) + 'mm';
-  document.getElementById('marginBottom').textContent = 'Bottom: ' + bottomMargin.toFixed(1) + 'mm';
-  document.getElementById('marginLeft').textContent = 'Left: ' + leftMargin.toFixed(1) + 'mm';
-  document.getElementById('marginRight').textContent = 'Right: ' + rightMargin.toFixed(1) + 'mm';
+  // Measurements panel shows distance from edges
+  const leftEdge = Math.max(0, (labelW - (contentW/scaleX)) / 2 + parseFloat(xMm));
+  const topEdge = Math.max(0, (labelH - (contentH/scaleY)) / 2 + parseFloat(yMm));
   
-  document.getElementById('valTop').textContent = topMargin.toFixed(1) + ' mm';
-  document.getElementById('valBottom').textContent = bottomMargin.toFixed(1) + ' mm';
-  document.getElementById('valLeft').textContent = leftMargin.toFixed(1) + ' mm';
-  document.getElementById('valRight').textContent = rightMargin.toFixed(1) + ' mm';
+  document.getElementById('valLeft').textContent = leftEdge.toFixed(1) + ' mm from left';
+  document.getElementById('valTop').textContent = topEdge.toFixed(1) + ' mm from top';
+  document.getElementById('valRight').textContent = '';
+  document.getElementById('valBottom').textContent = '';
   
-  document.getElementById('measTop').classList.toggle('warning', topMargin < 0);
-  document.getElementById('measBottom').classList.toggle('warning', bottomMargin < 0);
-  document.getElementById('measLeft').classList.toggle('warning', leftMargin < 0);
-  document.getElementById('measRight').classList.toggle('warning', rightMargin < 0);
-  
-  document.getElementById('arrowUp').classList.toggle('show', yOffset < 0);
-  document.getElementById('arrowDown').classList.toggle('show', yOffset > 0);
+  // Arrows show which way content moves
   document.getElementById('arrowLeft').classList.toggle('show', xOffset < 0);
   document.getElementById('arrowRight').classList.toggle('show', xOffset > 0);
+  document.getElementById('arrowUp').classList.toggle('show', yOffset < 0);
+  document.getElementById('arrowDown').classList.toggle('show', yOffset > 0);
   
   document.getElementById('scaleInfo').textContent = 
-    `Scale: ${scale.toFixed(1)}px/mm | Label: ${labelW.toFixed(1)}×${labelH.toFixed(1)}mm`;
+    'Offset: X=' + xOffset + ' Y=' + yOffset + ' dots | Center = 0,0';
 }
 
 async function saveConfig(){
