@@ -267,11 +267,20 @@ def api_print_template():
                 return jsonify({"ok": False, "error": "PDF conversion failed"}), 500
             img = Image.open(io.BytesIO(result.stdout))
         
-        # Convert to grayscale and resize to label size
+        # Convert to grayscale and resize to label size with margin
         img = img.convert("L")
         label_width = int(cfg['label_width_mm'] * 8)  # 203 dpi = 8 dots/mm
         label_height = int(cfg['label_height_mm'] * 8)
-        img = img.resize((label_width, label_height), Image.Resampling.LANCZOS)
+        # Add 3mm margin on each side (24 dots at 8 dots/mm) to prevent edge clipping
+        margin_dots = 24
+        content_width = label_width - (2 * margin_dots)
+        content_height = label_height - (2 * margin_dots)
+        img = img.resize((content_width, content_height), Image.Resampling.LANCZOS)
+        
+        # Create a white canvas and paste the resized image centered
+        canvas = Image.new('L', (label_width, label_height), 255)  # White background
+        canvas.paste(img, (margin_dots, margin_dots))
+        img = canvas
         
         # Convert to TSPL
         img = Image.eval(img, lambda px: 255 - px)
