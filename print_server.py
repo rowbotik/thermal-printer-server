@@ -294,7 +294,9 @@ def api_print_template():
                             byte_val |= (1 << (7 - bit))
                 bitmap_bytes.append(byte_val)
         
-        header = f"BITMAP {cfg['x_offset']},{cfg['y_offset']},{width_bytes},{height},0,"
+        # Clamp Y offset to valid range (0 = top edge, can't be negative)
+        y_pos = max(0, int(cfg['y_offset']))
+        header = f"BITMAP {cfg['x_offset']},{y_pos},{width_bytes},{height},0,"
         
         output = bytearray()
         output.extend(f"SIZE {cfg['label_width_mm']}mm,{cfg['label_height_mm']}mm\n".encode())
@@ -380,8 +382,10 @@ def print_image():
         output.extend(f"SHIFT {int(cfg['x_offset'])}\n".encode())
         output.extend(b"CLS\n")
         
-        # Add bitmap at Y offset
-        bitmap_header = f"BITMAP 0,{int(cfg['y_offset'])},{width_bytes},{height},0,"
+        # Add bitmap at Y offset (clamp to valid range: min 0 = top edge)
+        # TSPL Y=0 is top of label; negative Y is invalid
+        y_pos = max(0, int(cfg['y_offset']))
+        bitmap_header = f"BITMAP 0,{y_pos},{width_bytes},{height},0,"
         output.extend(bitmap_header.encode('ascii'))
         output.extend(bytes(bitmap_bytes))
         
