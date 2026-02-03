@@ -330,6 +330,41 @@ ADMIN_HTML = """
       color: #0066cc;
       transition: all 0.2s ease;
     }
+    .origin-marker {
+      position: absolute;
+      top: -2px;
+      left: -2px;
+      width: 12px;
+      height: 12px;
+      background: #dc3545;
+      border-radius: 50%;
+      border: 2px solid white;
+      box-shadow: 0 0 0 2px #dc3545;
+      z-index: 10;
+      font-size: 8px;
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .axis-x {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 1px;
+      background: repeating-linear-gradient(90deg, #ccc 0, #ccc 5px, transparent 5px, transparent 10px);
+      opacity: 0.5;
+    }
+    .axis-y {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 1px;
+      height: 100%;
+      background: repeating-linear-gradient(0deg, #ccc 0, #ccc 5px, transparent 5px, transparent 10px);
+      opacity: 0.5;
+    }
     .content-box::after { content: "CONTENT"; font-weight: bold; }
     .margin-label {
       position: absolute;
@@ -410,6 +445,8 @@ ADMIN_HTML = """
           <option value="0.5">0.5 mm (4 dots)</option>
           <option value="1" selected>1.0 mm (8 dots)</option>
           <option value="2">2.0 mm (16 dots)</option>
+          <option value="5">5.0 mm (40 dots)</option>
+          <option value="10">10.0 mm (80 dots)</option>
         </select>
       </div>
       <div class="nudge-grid">
@@ -437,7 +474,13 @@ ADMIN_HTML = """
     <div class="panel">
       <h3>Label Visualizer</h3>
       <div class="visualizer">
+        <div style="position: relative; margin-bottom: 10px;">
+          <div style="font-size: 12px; color: #666;">▼ Origin (0,0) at top-left</div>
+        </div>
         <div class="label-container" id="labelContainer">
+          <div class="origin-marker" title="Origin (0,0)">●</div>
+          <div class="axis-x"></div>
+          <div class="axis-y"></div>
           <div class="content-box" id="contentBox"></div>
           <div class="margin-label margin-top" id="marginTop">Top: 0mm</div>
           <div class="margin-label margin-bottom" id="marginBottom">Bottom: 0mm</div>
@@ -519,14 +562,19 @@ function updateVisualizer() {
   const displayW = labelW * scale;
   const displayH = labelH * scale;
   
-  const contentW = displayW * 0.7;
-  const contentH = displayH * 0.7;
+  // Content box size (represents printable area, smaller than label)
+  const contentW = displayW * 0.6;
+  const contentH = displayH * 0.6;
   
+  // Convert offsets to pixels
   const xOffsetPx = (xOffset / DOTS_PER_MM) * scale;
   const yOffsetPx = (yOffset / DOTS_PER_MM) * scale;
   
-  const contentLeft = (displayW - contentW) / 2 + xOffsetPx;
-  const contentTop = (displayH - contentH) / 2 + yOffsetPx;
+  // Position from origin (top-left)
+  // At 0,0: content box starts at default margin (50 dots = ~6mm)
+  const defaultMarginPx = (50 / DOTS_PER_MM) * scale; // 50 dots default margin
+  const contentLeft = defaultMarginPx + xOffsetPx;
+  const contentTop = defaultMarginPx + yOffsetPx;
   
   const container = document.getElementById('labelContainer');
   const contentBox = document.getElementById('contentBox');
@@ -538,6 +586,12 @@ function updateVisualizer() {
   contentBox.style.height = contentH + 'px';
   contentBox.style.left = contentLeft + 'px';
   contentBox.style.top = contentTop + 'px';
+  
+  // Update axis labels to show offset direction
+  const axisX = container.querySelector('.axis-x');
+  const axisY = container.querySelector('.axis-y');
+  if (axisX) axisX.style.transform = 'translateY(' + Math.max(0, yOffsetPx) + 'px)';
+  if (axisY) axisY.style.transform = 'translateX(' + Math.max(0, xOffsetPx) + 'px)';
   
   const leftMargin = dotsToMm(xOffset);
   const contentW_mm = (contentW / scale);
