@@ -545,7 +545,7 @@ function updateVisualizer() {
   document.getElementById('arrowRight').classList.toggle('show', xOffset > 0);
   
   document.getElementById('scaleInfo').textContent = 
-    \`Scale: ${scale.toFixed(1)}px/mm | Label: ${labelW.toFixed(1)}×${labelH.toFixed(1)}mm\`;
+    `Scale: ${scale.toFixed(1)}px/mm | Label: ${labelW.toFixed(1)}×${labelH.toFixed(1)}mm`;
 }
 
 async function saveConfig(){
@@ -586,7 +586,7 @@ async function nudge(axis, mm){
       document.getElementById('x_offset').value = data.x_offset;
       document.getElementById('y_offset').value = data.y_offset;
       updateVisualizer();
-      setStatus(\`Nudged ${axis} by ${mm}mm → X:${data.x_offset} Y:${data.y_offset} dots\`);
+      setStatus(`Nudged ${axis} by ${mm}mm → X:${data.x_offset} Y:${data.y_offset} dots`);
     } else {
       setStatus('Nudge failed: ' + (data.error||'unknown'), true);
     }
