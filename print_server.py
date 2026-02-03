@@ -16,11 +16,19 @@ from typing import Dict, Any
 from flask import Flask, request, jsonify, Response
 from PIL import Image
 
+# Try to import pdf2image, fallback to subprocess
+try:
+    from pdf2image import convert_from_path
+    HAS_PDF2IMAGE = True
+except ImportError:
+    HAS_PDF2IMAGE = False
+
 app = Flask(__name__)
 
 # Config paths
 CONFIG_PATH = "/home/alex/thermal_config.json"
 PRINTER_DEVICE = "/dev/usb/lp0"
+TEMPLATE_PATH = "/home/alex/template.pdf"
 
 # Constants
 DOTS_PER_MM = 8
@@ -231,6 +239,73 @@ def api_feed():
             tspl = f"SIZE {cfg['label_width_mm']} mm,{cfg['label_height_mm']} mm\nGAP {cfg['gap_mm']} mm,0\nFEED {int(cfg['label_height_mm'])}\n"
             send_tspl(tspl)
             return jsonify({"ok": True, "action": "feed"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/print-template", methods=["POST"])
+def api_print_template():
+    """Print the template PDF"""
+    try:
+        if not os.path.exists(TEMPLATE_PATH):
+            return jsonify({"ok": False, "error": "Template not found"}), 404
+        
+        cfg = load_config()
+        
+        # Convert PDF to image
+        if HAS_PDF2IMAGE:
+            images = convert_from_path(TEMPLATE_PATH, dpi=203)
+            if not images:
+                return jsonify({"ok": False, "error": "Could not convert PDF"}), 500
+            img = images[0]
+        else:
+            # Fallback: use pdftoppm
+            result = subprocess.run(
+                ["pdftoppm", "-png", "-r", "203", "-f", "1", "-l", "1", TEMPLATE_PATH],
+                capture_output=True
+            )
+            if result.returncode != 0:
+                return jsonify({"ok": False, "error": "PDF conversion failed"}), 500
+            img = Image.open(io.BytesIO(result.stdout))
+        
+        # Convert to grayscale and resize to label size
+        img = img.convert("L")
+        label_width = int(cfg['label_width_mm'] * 8)  # 203 dpi = 8 dots/mm
+        label_height = int(cfg['label_height_mm'] * 8)
+        img = img.resize((label_width, label_height), Image.Resampling.LANCZOS)
+        
+        # Convert to TSPL
+        img = Image.eval(img, lambda px: 255 - px)
+        img = img.convert("1", dither=Image.Dither.FLOYDSTEINBERG)
+        
+        width, height = img.size
+        width_bytes = (width + 7) // 8
+        padded_width = width_bytes * 8
+        pixels = list(img.getdata())
+        bitmap_bytes = bytearray()
+        for row in range(height):
+            row_start = row * width
+            for byte_col in range(0, padded_width, 8):
+                byte_val = 0
+                for bit in range(8):
+                    pixel_col = byte_col + bit
+                    if pixel_col < width:
+                        pixel_val = pixels[row_start + pixel_col]
+                        if pixel_val < 128:
+                            byte_val |= (1 << (7 - bit))
+                bitmap_bytes.append(byte_val)
+        
+        header = f"BITMAP {cfg['x_offset']},{cfg['y_offset']},{width_bytes},{height},0,"
+        
+        output = bytearray()
+        output.extend(f"SIZE {cfg['label_width_mm']}mm,{cfg['label_height_mm']}mm\n".encode())
+        output.extend(f"GAP {cfg['gap_mm']}mm,0mm\n".encode())
+        output.extend(b"CLS\n")
+        output.extend(header.encode('ascii'))
+        output.extend(bytes(bitmap_bytes))
+        output.extend(b"\nPRINT 1,1\n")
+        
+        send_tspl_bytes(output)
+        return jsonify({"ok": True, "printed": "template"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -507,6 +582,7 @@ ADMIN_HTML = """
       </div>
       
       <h3 style="margin-top: 20px;">Test Prints</h3>
+      <button onclick="printTemplate()" style="background: #28a745;">📄 Print Template PDF</button>
       <button onclick="printTest('direction')">🧭 Direction Test</button>
       <button onclick="printTest('border')">📦 Border</button>
       <button onclick="printTest('center')">🎯 Center</button>
