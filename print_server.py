@@ -194,33 +194,20 @@ def api_print_test(test_type):
     if test_type == "direction":
         # Print direction markers at corners
         tspl = LabelTemplates.tspl_header(cfg)
-        tspl += f'TEXT 10,10,"2",0,1,1,"<<< LEFT EDGE"
-'
-        tspl += f'TEXT 600,10,"2",0,1,1,"RIGHT EDGE >>>"
-'
-        tspl += f'TEXT 10,1100,"2",0,1,1,"<<< LEFT EDGE"
-'
-        tspl += f'TEXT 600,1100,"2",0,1,1,"RIGHT EDGE >>>"
-'
-        tspl += f'TEXT 300,550,"3",0,1,1,"^ TOP ^"
-'
-        tspl += f'TEXT 300,1050,"3",0,1,1,"v BOTTOM v"
-'
-        tspl += f'BAR 10,50,800,2
-'
-        tspl += f'BAR 10,1150,800,2
-'
-        tspl += f'BAR 50,10,2,1200
-'
-        tspl += f'BAR 750,10,2,1200
-'
-        tspl += "PRINT 1
-"
+        tspl += 'TEXT 10,10,"2",0,1,1,"<<< LEFT EDGE"\n'
+        tspl += 'TEXT 600,10,"2",0,1,1,"RIGHT EDGE >>>"\n'
+        tspl += 'TEXT 10,1100,"2",0,1,1,"<<< LEFT EDGE"\n'
+        tspl += 'TEXT 600,1100,"2",0,1,1,"RIGHT EDGE >>>"\n'
+        tspl += 'TEXT 300,550,"3",0,1,1,"^ TOP ^"\n'
+        tspl += 'TEXT 300,1050,"3",0,1,1,"v BOTTOM v"\n'
+        tspl += 'BAR 10,50,800,2\n'
+        tspl += 'BAR 10,1150,800,2\n'
+        tspl += 'BAR 50,10,2,1200\n'
+        tspl += 'BAR 750,10,2,1200\n'
+        tspl += "PRINT 1\n"
         send_tspl(tspl)
-        return jsonify({"ok": True, "test": "direction"})
+        return jsonify({"ok": True, "test": test_type})
     elif test_type == "border":
-    cfg = load_config()
-    if test_type == "border":
         send_tspl(LabelTemplates.border_test(cfg))
     elif test_type == "center":
         send_tspl(LabelTemplates.center_test(cfg))
@@ -236,20 +223,12 @@ def api_feed():
         cfg = load_config()
         if action == 'reset':
             # Reset to home position
-            tspl = f"SIZE {cfg['label_width_mm']} mm,{cfg['label_height_mm']} mm
-GAP {cfg['gap_mm']} mm,0
-HOME
-CLS
-PRINT 1
-"
+            tspl = f"SIZE {cfg['label_width_mm']} mm,{cfg['label_height_mm']} mm\nGAP {cfg['gap_mm']} mm,0\nHOME\nCLS\nPRINT 1\n"
             send_tspl(tspl)
             return jsonify({"ok": True, "action": "reset"})
         else:
             # Feed forward one label
-            tspl = f"SIZE {cfg['label_width_mm']} mm,{cfg['label_height_mm']} mm
-GAP {cfg['gap_mm']} mm,0
-FEED {int(cfg['label_height_mm'])}
-"
+            tspl = f"SIZE {cfg['label_width_mm']} mm,{cfg['label_height_mm']} mm\nGAP {cfg['gap_mm']} mm,0\nFEED {int(cfg['label_height_mm'])}\n"
             send_tspl(tspl)
             return jsonify({"ok": True, "action": "feed"})
     except Exception as e:
