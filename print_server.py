@@ -340,13 +340,13 @@ def print_image():
         image_data = base64.b64decode(body)
         cfg = load_config()
         
-        # Resize image to fit label
+        # Load image and convert to grayscale
         img = Image.open(io.BytesIO(image_data)).convert("L")
-        label_width = int(cfg['label_width_mm'] * DOTS_PER_MM)  # 8 dots/mm at 203 DPI
-        label_height = int(cfg['label_height_mm'] * DOTS_PER_MM)
+        label_width_dots = int(cfg['label_width_mm'] * DOTS_PER_MM)  # 8 dots/mm at 203 DPI
+        label_height_dots = int(cfg['label_height_mm'] * DOTS_PER_MM)
         
-        # Resize to exact label size (no centering - use offset settings)
-        img = img.resize((label_width, label_height), Image.Resampling.LANCZOS)
+        # Resize to fit within label if too large (maintain aspect ratio)
+        img.thumbnail((label_width_dots, label_height_dots), Image.Resampling.LANCZOS)
         
         # Invert and dither
         img = Image.eval(img, lambda px: 255 - px)
