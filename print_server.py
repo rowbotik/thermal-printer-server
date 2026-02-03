@@ -474,6 +474,10 @@ ADMIN_HTML = """
       margin-top: 10px;
       text-align: center;
     }
+    .history-panel { margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 6px; font-size: 12px; max-height: 200px; overflow-y: auto; }
+    .history-title { font-weight: 600; color: #333; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+    .history-item { padding: 4px 0; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; }
+    .history-clear { font-size: 10px; color: #666; cursor: pointer; background: none; border: 1px solid #ddd; padding: 2px 8px; border-radius: 3px; }
     .scale-info {
       font-size: 11px;
       color: #999;
