@@ -33,7 +33,9 @@ DEFAULT_CONFIG = {
     "label_height_mm": 152.4,
     "gap_mm": 2.5,
     "x_offset": 32,
-    "y_offset": 0
+    "y_offset": 0,
+    "flip_x": False,
+    "flip_y": False
 }
 
 def load_config():
@@ -589,6 +591,49 @@ ADMIN_HTML = """
 
 <script>
 const DOTS_PER_MM = 8;
+let commandHistory = [];
+let flipX = false;
+let flipY = false;
+
+function addCommand(cmd) {
+  const time = new Date().toLocaleTimeString('en-US', {hour12: false});
+  commandHistory.unshift({time, cmd});
+  if (commandHistory.length > 50) commandHistory.pop();
+  renderHistory();
+}
+
+function renderHistory() {
+  const el = document.getElementById('commandHistory');
+  if (!el) return;
+  if (commandHistory.length === 0) {
+    el.innerHTML = '<div style="color: #999; text-align: center; padding: 20px;">History will appear here</div>';
+    return;
+  }
+  el.innerHTML = commandHistory.map(h => 
+    `<div style="padding: 4px 0; border-bottom: 1px solid #e0e0e0;"><span style="color: #666; font-size: 10px;">${h.time}</span> <span style="font-weight: 500;">${h.cmd}</span></div>`
+  ).join('');
+}
+
+function clearHistory() {
+  commandHistory = [];
+  renderHistory();
+}
+
+async function saveOrientation() {
+  flipX = document.getElementById('flip_x').checked;
+  flipY = document.getElementById('flip_y').checked;
+  const cfg = await (await fetch('/api/config')).json();
+  cfg.flip_x = flipX;
+  cfg.flip_y = flipY;
+  await fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(cfg)
+  });
+  addCommand(`Orientation: ${flipX ? 'X-flipped' : 'X-normal'}, ${flipY ? 'Y-flipped' : 'Y-normal'}`);
+  updateVisualizer();
+}
+
 
 function dotsToMm(dots) { return dots / DOTS_PER_MM; }
 function mmToDots(mm) { return Math.round(mm * DOTS_PER_MM); }
@@ -639,8 +684,11 @@ function updateVisualizer() {
   // FLIPPED: visual shows what actually happens on paper
   // X positive = content shifts LEFT on paper (opposite of visual right)
   const defaultMarginPx = (50 / DOTS_PER_MM) * scale; // 50 dots default margin
-  const contentLeft = defaultMarginPx - xOffsetPx;  // NEGATED - matches reality
-  const contentTop = defaultMarginPx + yOffsetPx;
+  // Apply flip transformations
+  const effectiveXOffset = flipX ? -xOffsetPx : xOffsetPx;
+  const effectiveYOffset = flipY ? -yOffsetPx : yOffsetPx;
+  const contentLeft = defaultMarginPx - effectiveXOffset;
+  const contentTop = defaultMarginPx + effectiveYOffset;
   
   const container = document.getElementById('labelContainer');
   const contentBox = document.getElementById('contentBox');
