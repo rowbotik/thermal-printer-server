@@ -200,18 +200,17 @@ def api_print_test(test_type):
     cfg = load_config()
     
     if test_type == "direction":
-        # Print direction markers at corners
+        # Print direction markers at corners - start at Y=0 (absolute top)
         tspl = LabelTemplates.tspl_header(cfg)
-        tspl += 'TEXT 10,10,"2",0,1,1,"<<< LEFT EDGE"\n'
-        tspl += 'TEXT 600,10,"2",0,1,1,"RIGHT EDGE >>>"\n'
-        tspl += 'TEXT 10,1100,"2",0,1,1,"<<< LEFT EDGE"\n'
-        tspl += 'TEXT 600,1100,"2",0,1,1,"RIGHT EDGE >>>"\n'
-        tspl += 'TEXT 300,550,"3",0,1,1,"^ TOP ^"\n'
-        tspl += 'TEXT 300,1050,"3",0,1,1,"v BOTTOM v"\n'
-        tspl += 'BAR 10,50,800,2\n'
-        tspl += 'BAR 10,1150,800,2\n'
-        tspl += 'BAR 50,10,2,1200\n'
-        tspl += 'BAR 750,10,2,1200\n'
+        tspl += 'TEXT 10,0,"2",0,1,1,"<<< LEFT TOP"\n'
+        tspl += 'TEXT 600,0,"2",0,1,1,"RIGHT TOP >>>"\n'
+        tspl += 'TEXT 10,1200,"2",0,1,1,"<<< LEFT BOTTOM"\n'
+        tspl += 'TEXT 600,1200,"2",0,1,1,"RIGHT BOTTOM >>>"\n'
+        tspl += 'TEXT 350,600,"3",0,1,1,"CENTER"\n'
+        tspl += 'BAR 0,0,812,3\n'  # Top bar at Y=0
+        tspl += 'BAR 0,1216,812,3\n'  # Bottom bar
+        tspl += 'BAR 0,0,3,1219\n'  # Left bar
+        tspl += 'BAR 809,0,3,1219\n'  # Right bar
         tspl += "PRINT 1\n"
         send_tspl(tspl)
         return jsonify({"ok": True, "test": test_type})
