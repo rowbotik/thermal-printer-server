@@ -217,6 +217,28 @@ def print_raw():
     send_tspl(tspl)
     return jsonify({"status": "printed", "mode": "raw"})
 
+@app.route("/image", methods=["POST"])
+def print_image():
+    try:
+        body = request.get_data()
+        image_data = base64.b64decode(body)
+        cfg = load_config()
+        header, bitmap_data = image_to_tspl(image_data, x=cfg['x_offset'], y=cfg['y_offset'])
+        
+        output = bytearray()
+        output.extend(f"SIZE {cfg['label_width_mm']}mm,{cfg['label_height_mm']}mm\n".encode())
+        output.extend(f"GAP {cfg['gap_mm']}mm,0mm\n".encode())
+        output.extend(b"CLS\n")
+        output.extend(header.encode('ascii'))
+        output.extend(bitmap_data)
+        output.extend(b"\nPRINT 1,1\n")
+        
+        send_tspl_bytes(output)
+        return jsonify({"status": "printed", "template": "image"})
+    except Exception as e:
+        return jsonify({"error": f"Image processing failed: {str(e)}"}), 500
+
+
 ADMIN_HTML = """
 <!doctype html>
 <html>
