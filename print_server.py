@@ -292,14 +292,17 @@ ADMIN_HTML = """
       background: #f5f5f5;
     }
     h2 { margin-top: 0; }
-    .container { display: flex; gap: 20px; flex-wrap: wrap; }
+    .container { display: flex; gap: 20px; flex-wrap: nowrap; }
     .panel { 
       background: white; 
       padding: 16px; 
       border-radius: 8px; 
       box-shadow: 0 1px 3px rgba(0,0,0,0.1);
       flex: 1;
-      min-width: 300px;
+      min-width: 280px;
+    }
+    @media (max-width: 1000px) {
+      .container { flex-wrap: wrap; }
     }
     .row { margin-bottom: 12px; display: flex; align-items: center; }
     .row label { width: 140px; font-weight: 500; color: #555; }
@@ -582,14 +585,14 @@ ADMIN_HTML = """
           </select>
         </div>
       </div>
-      
-      <div class="panel" style="margin-top: 15px;">
-        <h3>📜 Command History</h3>
-        <div id="commandHistory" style="max-height: 200px; overflow-y: auto; font-size: 12px; background: #f8f9fa; padding: 10px; border-radius: 6px; min-height: 100px;">
-          <div style="color: #999; text-align: center; padding: 20px;">History will appear here</div>
-        </div>
-        <button onclick="clearHistory()" class="secondary" style="margin-top: 10px; width: 100%;">Clear History</button>
+    </div>
+    
+    <div class="panel" style="min-width: 250px; max-width: 300px;">
+      <h3>📜 Command History</h3>
+      <div id="commandHistory" style="max-height: 400px; overflow-y: auto; font-size: 12px; background: #f8f9fa; padding: 10px; border-radius: 6px; min-height: 300px;">
+        <div style="color: #999; text-align: center; padding: 20px;">History will appear here</div>
       </div>
+      <button onclick="clearHistory()" class="secondary" style="margin-top: 10px; width: 100%;">Clear History</button>
     </div>
   </div>
 
