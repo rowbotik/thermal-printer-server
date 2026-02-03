@@ -1,261 +1,305 @@
 #!/usr/bin/env python3
 """
 Thermal Printer Server for ORGSTA T001
-Fixed version with proper gap detection and roll label support
+Flask version with Web UI for configuration
 """
 
-import http.server
-import socketserver
+import os
 import json
+import shutil
+import subprocess
 import base64
 import io
-import sys
 from datetime import datetime
+from typing import Dict, Any
+
+from flask import Flask, request, jsonify, Response
 from PIL import Image
 
-PORT = 8765
+app = Flask(__name__)
 
-# Label configuration for 4" x 159mm roll labels
-LABEL_WIDTH_MM = 101.6  # 4 inches
-LABEL_HEIGHT_MM = 152.4 # lock length tuning baseline (4x6)
-GAP_MM = 2.5           # lock gap baseline
-X_OFFSET = 32          # +2mm more left shift
-Y_OFFSET = 0           # neutral while restoring known-good tear behavior
+# Config paths
+CONFIG_PATH = "/home/alex/thermal_config.json"
+PRINTER_DEVICE = "/dev/usb/lp0"
 
-def image_to_tspl(image_data, x=X_OFFSET, y=Y_OFFSET, dither=True):
-    """
-    Convert image to TSPL BITMAP command with raw binary data
-    Fixed: proper padding, inverted colors, gap disabled for perforated labels
-    """
-    img = Image.open(io.BytesIO(image_data)).convert('L')
-    
-    # Keep original size, don't resize
+# Constants
+DOTS_PER_MM = 8
+DOT_MIN = -300
+DOT_MAX = 300
+
+# Default config (4" x 6" labels)
+DEFAULT_CONFIG = {
+    "label_width_mm": 101.6,
+    "label_height_mm": 152.4,
+    "gap_mm": 2.5,
+    "x_offset": 32,
+    "y_offset": 0
+}
+
+def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        return DEFAULT_CONFIG.copy()
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            data = json.load(f)
+        out = DEFAULT_CONFIG.copy()
+        out.update({k: data.get(k, v) for k, v in DEFAULT_CONFIG.items()})
+        return out
+    except Exception:
+        return DEFAULT_CONFIG.copy()
+
+def save_config(cfg):
+    if os.path.exists(CONFIG_PATH):
+        shutil.copyfile(CONFIG_PATH, CONFIG_PATH + ".bak")
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+def send_tspl(tspl_data):
+    with open(PRINTER_DEVICE, "wb") as f:
+        f.write((tspl_data + "\n").encode())
+
+def send_tspl_bytes(tspl_bytes):
+    with open(PRINTER_DEVICE, "wb") as f:
+        f.write(tspl_bytes)
+
+def image_to_tspl(image_data, x=0, y=0, dither=True):
+    img = Image.open(io.BytesIO(image_data)).convert("L")
     width, height = img.size
-    
-    # Invert image (printer expects inverted)
-    img = Image.eval(img, lambda x: 255 - x)
-    
-    # Apply dithering
+    img = Image.eval(img, lambda px: 255 - px)
     if dither:
-        img = img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+        img = img.convert("1", dither=Image.Dither.FLOYDSTEINBERG)
     else:
-        img = img.point(lambda x: 0 if x < 128 else 255, '1')
-    
-    # Calculate proper byte width (TSPL requires byte alignment)
+        img = img.point(lambda px: 0 if px < 128 else 255, "1")
     width_bytes = (width + 7) // 8
     padded_width = width_bytes * 8
-    
     pixels = list(img.getdata())
-    
-    # Build bitmap bytes - MSB first, padding pixels are white (0)
     bitmap_bytes = bytearray()
-    
     for row in range(height):
         row_start = row * width
         for byte_col in range(0, padded_width, 8):
             byte_val = 0
             for bit in range(8):
                 pixel_col = byte_col + bit
-                if pixel_col < width:  # Real pixel
+                if pixel_col < width:
                     pixel_val = pixels[row_start + pixel_col]
-                    if pixel_val < 128:  # Black
+                    if pixel_val < 128:
                         byte_val |= (1 << (7 - bit))
-                # Padding pixels stay 0 (white)
             bitmap_bytes.append(byte_val)
-    
     header = f"BITMAP {x},{y},{width_bytes},{height},0,"
-    
     return header, bytes(bitmap_bytes)
 
 class LabelTemplates:
     @staticmethod
-    def standard_shipping(order, customer, address, barcode=None, date_str=None):
-        """Standard shipping label"""
-        if date_str is None:
-            date_str = datetime.now().strftime('%Y-%m-%d')
-        
-        tspl = [
-            f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
-            f"GAP {GAP_MM}mm,0mm",  # Enable gap sensing for roll labels
-            "CLS",
-            "BOX 40,20,400,100,4",
-            'TEXT 50,35,"3",0,1,1,"ATK FABRICATION CO."',
-            'TEXT 50,75,"1",0,1,1,"Quality Fabrication & Design"',
-            "BAR 40,110,360,3",
-            f'TEXT 50,130,"2",0,1,1,"Order: #{order}"',
-            f'TEXT 50,180,"2",0,1,1,"Date: {date_str}"',
-            "BAR 40,230,360,2",
-            'TEXT 50,250,"2",0,1,1,"SHIP TO:"',
-            'TEXT 70,300,"2",0,1,1,""',
-        ]
-        
-        addr_lines = address.split(',') if ',' in address else [address[i:i+30] for i in range(0, min(len(address), 90), 30)]
-        y = 330
-        for line in addr_lines[:3]:
-            safe_line = line.strip().replace('"', '\\"')[:35]
-            tspl.append(f'TEXT 70,{y},"2",0,1,1,"{safe_line}"')
-            y += 50
-        
-        bc = barcode if barcode else order
-        tspl.extend([
-            "BAR 40,500,360,2",
-            f'BARCODE 80,520,"128",80,1,0,2,2,"{bc[:25]}"',
-            f'TEXT 80,620,"1",0,1,1,"{bc[:25]}"',
-        ])
-        
-        tspl.append("PRINT 1,1")
-        return "\n".join(tspl)
+    def tspl_header(cfg):
+        return f"SIZE {cfg['label_width_mm']} mm,{cfg['label_height_mm']} mm\nGAP {cfg['gap_mm']} mm,0\nDENSITY 8\nSPEED 4\nDIRECTION 1\nSHIFT {int(cfg['x_offset'])}\nCLS\n"
     
     @staticmethod
-    def simple_text(lines, title="ATK FABRICATION"):
-        """Simple text-only label"""
-        tspl = [
-            f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
-            f"GAP {GAP_MM}mm,0mm",
-            "CLS",
-            f'TEXT 50,30,"3",0,1,1,"{title}"',
-            "BAR 50,80,400,4",
-        ]
-        y = 110
+    def simple_text(lines, title="ATK FABRICATION", cfg=None):
+        if cfg is None:
+            cfg = load_config()
+        y0 = int(cfg["y_offset"])
+        tspl = LabelTemplates.tspl_header(cfg)
+        tspl += f'TEXT 50,{30+y0},"3",0,1,1,"{title}"\n'
+        tspl += f"BAR 50,{80+y0},400,4\n"
+        y = 110 + y0
         for line in lines[:8]:
             safe = line.replace('"', '\\"')[:40]
-            tspl.append(f'TEXT 50,{y},"2",0,1,1,"{safe}"')
+            tspl += f'TEXT 50,{y},"2",0,1,1,"{safe}"\n'
             y += 55
-        tspl.append("PRINT 1,1")
-        return "\n".join(tspl)
+        tspl += "PRINT 1,1\n"
+        return tspl
     
     @staticmethod
-    def packing_list(order, items, customer):
-        """Internal packing list"""
-        tspl = [
-            f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
-            f"GAP {GAP_MM}mm,0mm",
-            "CLS",
-            'TEXT 50,30,"3",0,1,1,"PACKING LIST"',
-            f'TEXT 50,90,"2",0,1,1,"Order: #{order}"',
-            f'TEXT 50,140,"2",0,1,1,"Customer: {customer[:30]}"',
-            "BAR 50,190,400,3",
-            'TEXT 50,210,"2",0,1,1,"ITEMS:"',
-        ]
-        y = 260
-        for i, item in enumerate(items[:6], 1):
-            safe = item.replace('"', '\\"')[:35]
-            tspl.append(f'TEXT 70,{y},"2",0,1,1,"{i}. {safe}"')
-            y += 50
-        tspl.append("PRINT 1,1")
-        return "\n".join(tspl)
-
-def send_tspl(tspl_data):
-    """Write TSPL data to printer"""
-    with open('/dev/usb/lp0', 'wb') as f:
-        f.write((tspl_data + "\n").encode())
-    return True
-
-def send_tspl_bytes(tspl_bytes):
-    """Write raw TSPL bytes to printer"""
-    with open('/dev/usb/lp0', 'wb') as f:
-        f.write(tspl_bytes)
-    return True
-
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
+    def border_test(cfg=None):
+        if cfg is None:
+            cfg = load_config()
+        w = int(round(cfg["label_width_mm"] * DOTS_PER_MM))
+        h = int(round(cfg["label_height_mm"] * DOTS_PER_MM))
+        y0 = int(cfg["y_offset"])
+        tspl = LabelTemplates.tspl_header(cfg)
+        tspl += f"BOX 0,{y0},{w-1},{y0 + h-1},2\n"
+        tspl += f'TEXT 10,{y0+10},"0",0,1,1,"BORDER TEST"\n'
+        tspl += f"PRINT 1\n"
+        return tspl
     
-    def send_json(self, data, code=200):
-        self.send_response(code)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
-    
-    def do_POST(self):
-        content_len = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_len)
-        
-        try:
-            if self.path == '/print':
-                lines = body.decode('utf-8').strip().split('\n')
-                tspl = LabelTemplates.simple_text(lines)
-                send_tspl(tspl)
-                self.send_json({"status": "printed", "lines": len(lines), "template": "simple"})
-            
-            elif self.path == '/shipping':
-                parts = body.decode('utf-8').strip().split('|')
-                if len(parts) >= 3:
-                    order, customer, address = parts[0], parts[1], parts[2]
-                    barcode = parts[3] if len(parts) > 3 else order
-                    tspl = LabelTemplates.standard_shipping(order, customer, address, barcode)
-                    send_tspl(tspl)
-                    self.send_json({"status": "printed", "order": order, "template": "shipping"})
-                else:
-                    self.send_json({"error": "Format: order|customer|address|barcode"}, 400)
-            
-            elif self.path == '/packing':
-                parts = body.decode('utf-8').strip().split('|')
-                if len(parts) >= 3:
-                    order, customer = parts[0], parts[1]
-                    items = parts[2].split(',')
-                    tspl = LabelTemplates.packing_list(order, items, customer)
-                    send_tspl(tspl)
-                    self.send_json({"status": "printed", "order": order, "template": "packing", "items": len(items)})
-                else:
-                    self.send_json({"error": "Format: order|customer|item1,item2,item3"}, 400)
-            
-            elif self.path == '/raw':
-                send_tspl(body.decode('utf-8'))
-                self.send_json({"status": "printed", "mode": "raw"})
-            
-            elif self.path == '/image':
-                try:
-                    image_data = base64.b64decode(body)
-                    header, bitmap_data = image_to_tspl(image_data)
-                    
-                    output = bytearray()
-                    output.extend(f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm\n".encode())
-                    output.extend(f"GAP {GAP_MM}mm,0mm\n".encode())  # Enable gap sensing
-                    output.extend(b"CLS\n")
-                    output.extend(header.encode('ascii'))
-                    output.extend(bitmap_data)
-                    output.extend(b"\nPRINT 1,1\n")
-                    
-                    send_tspl_bytes(output)
-                    self.send_json({"status": "printed", "template": "image"})
-                except Exception as e:
-                    self.send_json({"error": f"Image processing failed: {str(e)}"}, 500)
-            
-            else:
-                self.send_error(404)
-        
-        except Exception as e:
-            self.send_json({"error": str(e)}, 500)
-    
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        help_text = f"""Thermal Label Printer API - ATK Fabrication
+    @staticmethod
+    def center_test(cfg=None):
+        if cfg is None:
+            cfg = load_config()
+        w = int(round(cfg["label_width_mm"] * DOTS_PER_MM))
+        h = int(round(cfg["label_height_mm"] * DOTS_PER_MM))
+        cx = w // 2
+        cy = (h // 2) + int(cfg["y_offset"])
+        y0 = int(cfg["y_offset"])
+        tspl = LabelTemplates.tspl_header(cfg)
+        tspl += f"BAR {cx-20},{cy-1},40,2\n"
+        tspl += f"BAR {cx-1},{cy-20},2,40\n"
+        tspl += f"BOX {cx-32},{cy-32},{cx+32},{cy+32},1\n"
+        tspl += f"BOX {cx-16},{cy-16},{cx+16},{cy+16},1\n"
+        tspl += f'TEXT 10,{y0+10},"0",0,1,1,"CENTER CAL"\n'
+        tspl += f"PRINT 1\n"
+        return tspl
 
-LABEL SIZE: {LABEL_WIDTH_MM}mm x {LABEL_HEIGHT_MM}mm (4" x 6" roll, tuned)
-GAP DETECTION: Enabled ({GAP_MM}mm gap sensor for roll labels)
+@app.route("/api/config", methods=["GET", "POST"])
+def api_config():
+    if request.method == "GET":
+        return jsonify(load_config())
+    payload = request.get_json(force=True, silent=True)
+    if not payload:
+        return jsonify({"error": "Invalid JSON"}), 400
+    current = load_config()
+    merged = current.copy()
+    for k in DEFAULT_CONFIG.keys():
+        if k in payload:
+            merged[k] = payload[k]
+    try:
+        merged["x_offset"] = int(merged["x_offset"])
+        merged["y_offset"] = int(merged["y_offset"])
+        merged["label_width_mm"] = float(merged["label_width_mm"])
+        merged["label_height_mm"] = float(merged["label_height_mm"])
+        merged["gap_mm"] = float(merged["gap_mm"])
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": f"Invalid value: {e}"}), 400
+    save_config(merged)
+    return jsonify(merged)
 
-ENDPOINTS:
-POST /print      - Simple text (body: "Line 1\nLine 2")
-POST /shipping   - Shipping label (body: "order|customer|address|barcode")  
-POST /packing    - Packing list (body: "order|customer|item1,item2,item3")
-POST /raw        - Raw TSPL commands
-POST /image      - Base64-encoded PNG/JPG image
+@app.route("/api/nudge", methods=["POST"])
+def api_nudge():
+    payload = request.get_json(force=True, silent=True)
+    if not payload:
+        return jsonify({"error": "Invalid JSON"}), 400
+    axis = payload.get("axis")
+    mm = payload.get("mm")
+    if axis not in ("x", "y"):
+        return jsonify({"error": "axis must be 'x' or 'y'"}), 400
+    try:
+        mm = float(mm)
+    except (ValueError, TypeError):
+        return jsonify({"error": "mm must be a number"}), 400
+    cfg = load_config()
+    delta_dots = int(round(mm * DOTS_PER_MM))
+    if axis == "x":
+        cfg["x_offset"] = max(DOT_MIN, min(DOT_MAX, int(cfg["x_offset"]) + delta_dots))
+    else:
+        cfg["y_offset"] = max(DOT_MIN, min(DOT_MAX, int(cfg["y_offset"]) + delta_dots))
+    save_config(cfg)
+    return jsonify(cfg)
 
-EXAMPLES:
-curl -X POST http://thermal.local:8765/shipping -d "54321|Jane Doe|123 Oak Ave, Detroit|ORDER54321"
+@app.route("/api/print-test/<test_type>", methods=["POST"])
+def api_print_test(test_type):
+    cfg = load_config()
+    if test_type == "border":
+        send_tspl(LabelTemplates.border_test(cfg))
+    elif test_type == "center":
+        send_tspl(LabelTemplates.center_test(cfg))
+    else:
+        return jsonify({"error": "Unknown test type"}), 400
+    return jsonify({"ok": True, "test": test_type})
 
-curl -X POST http://thermal.local:8765/packing -d "99999|John Smith|Widget A,Widget B,Widget C"
+@app.route("/api/restart", methods=["POST"])
+def api_restart():
+    try:
+        subprocess.run(["sudo", "systemctl", "restart", "thermal-print-server"], check=True)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-# Print image (base64 encoded)
-curl -X POST http://thermal.local:8765/image -d "$(base64 -i logo.png)"
-"""
-        self.wfile.write(help_text.encode())
+@app.route("/print", methods=["POST"])
+def print_simple():
+    lines = request.get_data().decode("utf-8").strip().split("\n")
+    tspl = LabelTemplates.simple_text(lines)
+    send_tspl(tspl)
+    return jsonify({"status": "printed", "lines": len(lines), "template": "simple"})
 
-if __name__ == '__main__':
-    with socketserver.TCPServer(("0.0.0.0", PORT), Handler) as httpd:
-        print(f"Label printer server on port {PORT}")
-        print(f"Label size: {LABEL_WIDTH_MM}mm x {LABEL_HEIGHT_MM}mm")
-        httpd.serve_forever()
+@app.route("/raw", methods=["POST"])
+def print_raw():
+    tspl = request.get_data().decode("utf-8")
+    send_tspl(tspl)
+    return jsonify({"status": "printed", "mode": "raw"})
+
+ADMIN_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thermal Printer Admin</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 20px; max-width: 700px; background: #f5f5f5; }
+.card { background: white; padding: 16px; border-radius: 8px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.row { margin-bottom: 12px; display: flex; align-items: center; }
+.row label { width: 140px; font-weight: 500; color: #555; }
+input, select { width: 120px; padding: 6px; border: 1px solid #ddd; border-radius: 4px; }
+button { padding: 8px 16px; margin: 4px; border: none; border-radius: 4px; background: #0066cc; color: white; cursor: pointer; }
+button:hover { background: #0052a3; }
+.status { padding: 12px; background: #e9ecef; border-radius: 4px; margin-top: 12px; font-family: monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<h2>Thermal Printer Admin</h2>
+<div class="card">
+<h3>Settings</h3>
+<div class="row"><label>X Offset:</label><input id="x_offset" type="number"></div>
+<div class="row"><label>Y Offset:</label><input id="y_offset" type="number"></div>
+<div class="row"><label>Width (mm):</label><input id="label_width_mm" type="number" step="0.1"></div>
+<div class="row"><label>Height (mm):</label><input id="label_height_mm" type="number" step="0.1"></div>
+<div class="row"><label>Gap (mm):</label><input id="gap_mm" type="number" step="0.1"></div>
+<button onclick="saveConfig()">Save</button>
+</div>
+<div class="card">
+<h3>Nudge</h3>
+<select id="step"><option value="0.5">0.5mm</option><option value="1" selected>1mm</option><option value="2">2mm</option></select>
+<button onclick="nudge('x', -getStep())">Left</button>
+<button onclick="nudge('x', getStep())">Right</button>
+<button onclick="nudge('y', -getStep())">Up</button>
+<button onclick="nudge('y', getStep())">Down</button>
+</div>
+<div class="card">
+<h3>Test Prints</h3>
+<button onclick="printTest('border')">Border</button>
+<button onclick="printTest('center')">Center</button>
+</div>
+<div id="status" class="status">Ready</div>
+<script>
+async function loadConfig(){
+  const r = await fetch("/api/config");
+  const c = await r.json();
+  ["x_offset","y_offset","label_width_mm","label_height_mm","gap_mm"].forEach(k=>{
+    document.getElementById(k).value = c[k];
+  });
+}
+function getStep(){ return parseFloat(document.getElementById("step").value); }
+function setStatus(msg){ document.getElementById("status").textContent = new Date().toLocaleTimeString() + " - " + msg; }
+async function saveConfig(){
+  const body = {x_offset: parseInt(x_offset.value), y_offset: parseInt(y_offset.value), label_width_mm: parseFloat(label_width_mm.value), label_height_mm: parseFloat(label_height_mm.value), gap_mm: parseFloat(gap_mm.value)};
+  const r = await fetch("/api/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  setStatus(r.ok ? "Saved" : "Error");
+  if(r.ok) loadConfig();
+}
+async function nudge(axis, mm){
+  const r = await fetch("/api/nudge", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({axis, mm})});
+  const data = await r.json();
+  setStatus(r.ok ? `Nudged ${axis} by ${mm}mm` : "Error");
+  if(r.ok) loadConfig();
+}
+async function printTest(kind){
+  const r = await fetch("/api/print-test/" + kind, {method: "POST"});
+  setStatus(r.ok ? "Print sent" : "Error");
+}
+loadConfig();
+</script>
+</body>
+</html>"""
+
+@app.route("/admin")
+def admin_ui():
+    return Response(ADMIN_HTML, mimetype="text/html")
+
+@app.route("/")
+def index():
+    cfg = load_config()
+    return Response(f"Thermal Printer API\nLabel: {cfg['label_width_mm']}x{cfg['label_height_mm']}mm\nOffsets: X={cfg['x_offset']} Y={cfg['y_offset']}\n\nEndpoints: /print, /raw, /admin", mimetype="text/plain")
+
+if __name__ == "__main__":
+    print("Thermal printer server on port 8765")
+    print(f"Admin UI: http://thermal.local:8765/admin")
+    app.run(host="0.0.0.0", port=8765, threaded=True)
