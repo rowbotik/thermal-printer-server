@@ -1,0 +1,19 @@
+*PPD-Adobe: "4.3"
+*Manufacturer: "Custom"
+*ModelName: "Thermal Printer HTTP"
+*NickName: "Thermal Printer via HTTP"
+*cupsFilter: "application/vnd.cups-pdf 0 pdftopdf2http"
+*OpenUI *PageSize: PickOne
+*DefaultPageSize: Roll4x6
+*PageSize Roll4x6/4 x 6 inch: "<</PageSize[288 432]/ImagingBBox null>>setpagedevice"
+*PageSize Roll4x159mm/4 x 159mm: "<</PageSize[288 450]/ImagingBBox null>>setpagedevice"
+*CloseUI: *PageSize
+*DefaultImageableArea: Roll4x6
+*ImageableArea Roll4x6: "0 0 288 432"
+*ImageableArea Roll4x159mm: "0 0 288 450"
+*DefaultPaperDimension: Roll4x6
+*PaperDimension Roll4x6: "288 432"
+*PaperDimension Roll4x159mm: "288 450"
+*DefaultResolution: 203dpi
+*Resolution 203dpi/203 DPI: "<</HWResolution[203 203]>>setpagedevice"
+*CloseUI: *Resolution

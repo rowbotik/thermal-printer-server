@@ -1,0 +1,33 @@
+#!/bin/bash
+set -euo pipefail
+
+# CUPS backend args: $1=job-id $2=user $3=title $4=copies $5=options $6=file(optional)
+COPIES="${4:-1}"
+FILE="${6:-/dev/stdin}"
+SERVER="${DEVICE_URI#pdf2http://}"
+[ -z "$SERVER" ] && SERVER="localhost:8765"
+
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+INPUT_PDF="$TMPDIR/input.pdf"
+PNG_FILE="$TMPDIR/page.png"
+B64_FILE="$TMPDIR/page.b64"
+
+if [ "$FILE" = "/dev/stdin" ]; then
+  cat > "$INPUT_PDF"
+  FILE="$INPUT_PDF"
+fi
+
+pdftoppm -png -r 203 -f 1 -l 1 "$FILE" "$TMPDIR/page" 2>/dev/null || true
+mv "$TMPDIR/page-1.png" "$PNG_FILE" 2>/dev/null || true
+
+if [ ! -f "$PNG_FILE" ]; then
+  echo "pdf2http: failed to render PNG from input file: $FILE" >&2
+  exit 1
+fi
+
+# Avoid command-line length limits for larger PDFs.
+base64 < "$PNG_FILE" | tr -d '\n' > "$B64_FILE"
+for ((i=1; i<=COPIES; i++)); do
+  curl -fsS -X POST --data-binary "@$B64_FILE" "http://$SERVER/image" >/dev/null
+done

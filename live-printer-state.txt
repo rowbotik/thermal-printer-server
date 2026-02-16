@@ -1,0 +1,7 @@
+thermal
+Linux thermal 6.12.47+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.12.47-1+rpt1 (2025-09-16) aarch64 GNU/Linux
+system default destination: thermal
+device for orgsta-t001: pdf2http:/dev/null
+device for thermal: pdf2http://localhost:8765
+PageSize/Media Size: *Roll4x6 Roll4x159mm
+copies=1 device-uri=pdf2http://localhost:8765 finishings=3 job-cancel-after=10800 job-hold-until=no-hold job-priority=50 job-sheets=none,none marker-change-time=0 number-up=1 print-color-mode=monochrome printer-commands=AutoConfigure,Clean,PrintSelfTestPage printer-info=thermal printer-is-accepting-jobs=true printer-is-shared=true printer-is-temporary=false printer-location printer-make-and-model='Thermal Printer via HTTP' printer-state=3 printer-state-change-time=1771272957 printer-state-reasons=none printer-type=8523844 printer-uri-supported=ipp://localhost/printers/thermal

@@ -1,0 +1,15 @@
+[Unit]
+Description=Thermal Printer HTTP Server
+After=network.target
+
+[Service]
+Type=simple
+User=alex
+Group=lp
+WorkingDirectory=/opt/thermal-printer
+ExecStart=/usr/bin/python3 /opt/thermal-printer/print_server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
