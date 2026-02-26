@@ -69,8 +69,6 @@ backup_file() {
 echo "[1/9] Validating prerequisites..."
 require_cmd install
 require_cmd systemctl
-require_cmd lpadmin
-require_cmd lpoptions
 require_cmd curl
 
 if ! id "$TARGET_USER" >/dev/null 2>&1; then
@@ -86,6 +84,11 @@ if [[ "$SKIP_APT" -eq 0 ]]; then
 else
   echo "[2/9] Skipping apt package install (--skip-apt)."
 fi
+
+# These are provided by cups-client/cups and may not exist before apt install
+# on a fresh machine.
+require_cmd lpadmin
+require_cmd lpoptions
 
 echo "[3/9] Creating directories..."
 install -d -m 0755 /opt/thermal-printer
