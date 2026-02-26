@@ -1,4 +1,4 @@
-d491d0ff79f648dbba95708745a67c2c8ef6a41a3c4387bdb8988f2ba209299a  files/opt/thermal-printer/print_server.py
+23d720bdb2d7b13a5f7c7a0a695394171595b96a4e5b00fd2b79081c38a6aff3  files/opt/thermal-printer/print_server.py
 6557445b15596d10f4b7644ae13b03b146c070709faa5d23fae528a69431c662  files/usr/lib/cups/backend/pdf2http
 b21fe6620c323a15459dd68e664039999553220dde941fd77a0fbdfc73f56b22  files/usr/lib/cups/filter/pdftopdf2http
 4feaa1f6df2e0c22a09c00c706ff9b8efdf98e815c100000a5bdfb43e88b810d  files/etc/systemd/system/thermal-printer.service

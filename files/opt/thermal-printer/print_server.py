@@ -12,7 +12,7 @@ import socketserver
 import sys
 import traceback
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
@@ -58,6 +58,9 @@ def dedupe(items):
 
 
 PORT = env_int("THERMAL_PORT", 8765)
+PRINTER_DPI = env_int("THERMAL_DPI", 203)
+GAP_MM = env_float("THERMAL_GAP_MM", 3.0)
+MM_PER_INCH = 25.4
 
 # Label configuration for 4" x 6" labels
 LABEL_WIDTH_MM = env_float("THERMAL_LABEL_WIDTH_MM", 101.6)
@@ -103,6 +106,9 @@ def printer_health():
         "label": {
             "width_mm": LABEL_WIDTH_MM,
             "height_mm": LABEL_HEIGHT_MM,
+            "gap_mm": GAP_MM,
+            "pitch_mm": LABEL_HEIGHT_MM + GAP_MM,
+            "dpi": PRINTER_DPI,
         },
         "image_processing": {
             "x_offset": X_OFFSET,
@@ -112,6 +118,80 @@ def printer_health():
             "white_threshold": WHITE_THRESHOLD,
             "max_top_trim_px": MAX_TOP_TRIM_PX,
         },
+    }
+
+
+def labels_to_dots(labels):
+    return max(1, round(labels * (LABEL_HEIGHT_MM + GAP_MM) * PRINTER_DPI / MM_PER_INCH))
+
+
+def parse_rewind_request(path, body):
+    query = parse_qs(urlparse(path).query)
+    raw_text = body.decode("utf-8", errors="ignore").strip()
+
+    labels = None
+    dots = None
+    dry_run = False
+
+    if raw_text:
+        try:
+            payload = json.loads(raw_text)
+            if isinstance(payload, dict):
+                labels = payload.get("labels")
+                dots = payload.get("dots")
+                dry_run = bool(payload.get("dry_run", False))
+            elif isinstance(payload, (int, float)):
+                labels = payload
+        except json.JSONDecodeError:
+            # Plain numeric body means labels.
+            try:
+                labels = float(raw_text)
+            except ValueError:
+                pass
+
+    if "labels" in query:
+        labels = query["labels"][-1]
+    if "dots" in query:
+        dots = query["dots"][-1]
+    if "dry_run" in query:
+        dry_run = query["dry_run"][-1].strip().lower() in {"1", "true", "yes", "on"}
+
+    if labels is not None:
+        try:
+            labels = float(labels)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("rewind labels must be numeric") from exc
+
+    if dots is not None:
+        try:
+            dots = int(float(dots))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("rewind dots must be numeric") from exc
+
+    if labels is None and dots is None:
+        raise ValueError("Provide rewind labels or dots")
+
+    if labels is not None and labels <= 0:
+        raise ValueError("rewind labels must be > 0")
+    if dots is not None and dots <= 0:
+        raise ValueError("rewind dots must be > 0")
+
+    if labels is not None and labels > 50:
+        raise ValueError("rewind labels too large (max 50)")
+    if dots is not None and dots > 200000:
+        raise ValueError("rewind dots too large (max 200000)")
+
+    computed_dots = dots if dots is not None else labels_to_dots(labels)
+    computed_labels = labels if labels is not None else round(
+        computed_dots * MM_PER_INCH / ((LABEL_HEIGHT_MM + GAP_MM) * PRINTER_DPI), 4
+    )
+
+    return {
+        "labels": computed_labels,
+        "dots": computed_dots,
+        "dry_run": dry_run,
+        "pitch_mm": LABEL_HEIGHT_MM + GAP_MM,
+        "dpi": PRINTER_DPI,
     }
 
 
@@ -346,6 +426,7 @@ AUTO TRIM TOP WHITESPACE: {AUTO_TRIM_TOP_WHITESPACE}
 
 ENDPOINTS:
 GET  /healthz     - Service + printer device status
+POST /rewind      - Reverse feed ({round(labels_to_dots(1))} dots ~= 1 label pitch)
 POST /print       - Simple text (body: "Line 1\\nLine 2")
 POST /shipping    - Shipping label (body: "order|customer|address|barcode")
 POST /packing     - Packing list (body: "order|customer|item1,item2,item3")
@@ -355,6 +436,7 @@ POST /image       - Base64-encoded PNG/JPG image
 EXAMPLES:
 curl -X POST http://thermal.local:8765/shipping -d "54321|Jane Doe|123 Oak Ave, Detroit|ORDER54321"
 curl -X POST http://thermal.local:8765/image -d "$(base64 -i logo.png)"
+curl -X POST http://thermal.local:8765/rewind -d '{"labels":2}'
 """
 
 
@@ -423,6 +505,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if route == "/raw":
                 device_path = send_tspl(self._decode_body_text(body))
                 self.send_json({"status": "printed", "mode": "raw", "device_path": device_path})
+                return
+
+            if route == "/rewind":
+                req = parse_rewind_request(self.path, body)
+                tspl = f"BACKFEED {req['dots']}"
+                device_path = None
+                if not req["dry_run"]:
+                    device_path = send_tspl(tspl)
+                self.send_json(
+                    {
+                        "status": "ok" if req["dry_run"] else "printed",
+                        "mode": "rewind",
+                        "labels": req["labels"],
+                        "dots": req["dots"],
+                        "pitch_mm": req["pitch_mm"],
+                        "dpi": req["dpi"],
+                        "tspl": tspl,
+                        "dry_run": req["dry_run"],
+                        "device_path": device_path,
+                    }
+                )
                 return
 
             if route == "/image":
