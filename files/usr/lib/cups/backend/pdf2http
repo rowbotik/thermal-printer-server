@@ -12,14 +12,19 @@ trap 'rm -rf "$TMPDIR"' EXIT
 INPUT_PDF="$TMPDIR/input.pdf"
 PNG_FILE="$TMPDIR/page.png"
 B64_FILE="$TMPDIR/page.b64"
+RESP_FILE="$TMPDIR/response.txt"
 
 if [ "$FILE" = "/dev/stdin" ]; then
   cat > "$INPUT_PDF"
   FILE="$INPUT_PDF"
 fi
 
-pdftoppm -png -r 203 -f 1 -l 1 "$FILE" "$TMPDIR/page" 2>/dev/null || true
-mv "$TMPDIR/page-1.png" "$PNG_FILE" 2>/dev/null || true
+if ! pdftoppm -png -singlefile -cropbox -r 203 -f 1 -l 1 "$FILE" "$TMPDIR/page" 2>"$TMPDIR/pdftoppm.stderr"; then
+  echo "pdf2http: pdftoppm failed for input file: $FILE" >&2
+  sed -n '1,20p' "$TMPDIR/pdftoppm.stderr" >&2 || true
+  exit 1
+fi
+mv "$TMPDIR/page.png" "$PNG_FILE" 2>/dev/null || true
 
 if [ ! -f "$PNG_FILE" ]; then
   echo "pdf2http: failed to render PNG from input file: $FILE" >&2
@@ -29,5 +34,19 @@ fi
 # Avoid command-line length limits for larger PDFs.
 base64 < "$PNG_FILE" | tr -d '\n' > "$B64_FILE"
 for ((i=1; i<=COPIES; i++)); do
-  curl -fsS -X POST --data-binary "@$B64_FILE" "http://$SERVER/image" >/dev/null
+  HTTP_CODE="$(
+    curl -sS -o "$RESP_FILE" -w '%{http_code}' -X POST \
+      --data-binary "@$B64_FILE" "http://$SERVER/image" || true
+  )"
+  case "$HTTP_CODE" in
+    2*)
+      ;;
+    *)
+      echo "pdf2http: POST /image failed (copy $i/$COPIES, HTTP ${HTTP_CODE:-curl-error})" >&2
+      if [ -s "$RESP_FILE" ]; then
+        sed -n '1,20p' "$RESP_FILE" >&2 || true
+      fi
+      exit 1
+      ;;
+  esac
 done

@@ -1,0 +1,3 @@
+# Stable symlink for a single USB printer on the Pi. If multiple USB printers
+# are attached, tighten this rule using vendor/product IDs from udevadm info.
+KERNEL=="lp[0-9]*", SUBSYSTEM=="usb", SYMLINK+="thermal-printer"

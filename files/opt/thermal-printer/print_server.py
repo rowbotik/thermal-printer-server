@@ -1,36 +1,140 @@
 #!/usr/bin/env python3
 """
 Thermal Printer Server for ORGSTA T001
-Fixed version with proper gap detection and roll label support
 """
 
-import http.server
-import socketserver
-import json
 import base64
+import http.server
 import io
+import json
+import os
+import socketserver
 import sys
+import traceback
 from datetime import datetime
+from urllib.parse import urlparse
+
 from PIL import Image
 
-PORT = 8765
+
+def env_bool(name, default=False):
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name, default):
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def env_float(name, default):
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def dedupe(items):
+    out = []
+    seen = set()
+    for item in items:
+        if not item:
+            continue
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+PORT = env_int("THERMAL_PORT", 8765)
 
 # Label configuration for 4" x 6" labels
-LABEL_WIDTH_MM = 101.6  # 4 inches
-LABEL_HEIGHT_MM = 152.4   # Roll height
-X_OFFSET = 0            # Adjust if left margin too big
-Y_OFFSET = 0           # Adjust for top margin
-AUTO_TRIM_TOP_WHITESPACE = True
-WHITE_THRESHOLD = 245
-MAX_TOP_TRIM_PX = 80
-HORIZONTAL_SHIFT_PX = -20  # Negative shifts left, positive shifts right
+LABEL_WIDTH_MM = env_float("THERMAL_LABEL_WIDTH_MM", 101.6)
+LABEL_HEIGHT_MM = env_float("THERMAL_LABEL_HEIGHT_MM", 152.4)
+X_OFFSET = env_int("THERMAL_X_OFFSET", 0)
+Y_OFFSET = env_int("THERMAL_Y_OFFSET", 0)
+
+# Default is OFF so full-page stickers keep their original canvas/bleed.
+AUTO_TRIM_TOP_WHITESPACE = env_bool("THERMAL_AUTO_TRIM_TOP_WHITESPACE", False)
+WHITE_THRESHOLD = env_int("THERMAL_WHITE_THRESHOLD", 245)
+MAX_TOP_TRIM_PX = env_int("THERMAL_MAX_TOP_TRIM_PX", 80)
+HORIZONTAL_SHIFT_PX = env_int("THERMAL_HORIZONTAL_SHIFT_PX", -20)
+
+_env_candidates = os.getenv("THERMAL_DEVICE_CANDIDATES", "").replace(",", ":").split(":")
+PRINTER_DEVICE_CANDIDATES = dedupe(
+    [os.getenv("THERMAL_DEVICE_PATH", "").strip()]
+    + [c.strip() for c in _env_candidates]
+    + ["/dev/thermal-printer", "/dev/usb/lp0", "/dev/usb/lp1", "/dev/usb/lp2"]
+)
+
+
+def log_event(level, message, **fields):
+    payload = {"level": level, "message": message}
+    if fields:
+        payload.update(fields)
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def current_printer_device():
+    for path in PRINTER_DEVICE_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def printer_health():
+    device_path = current_printer_device()
+    return {
+        "service": "ok",
+        "printer_connected": bool(device_path),
+        "printer_device": device_path,
+        "device_candidates": PRINTER_DEVICE_CANDIDATES,
+        "label": {
+            "width_mm": LABEL_WIDTH_MM,
+            "height_mm": LABEL_HEIGHT_MM,
+        },
+        "image_processing": {
+            "x_offset": X_OFFSET,
+            "y_offset": Y_OFFSET,
+            "horizontal_shift_px": HORIZONTAL_SHIFT_PX,
+            "auto_trim_top_whitespace": AUTO_TRIM_TOP_WHITESPACE,
+            "white_threshold": WHITE_THRESHOLD,
+            "max_top_trim_px": MAX_TOP_TRIM_PX,
+        },
+    }
+
+
+class PrinterWriteError(Exception):
+    def __init__(self, code, message, status=503, **details):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status = status
+        self.details = details
+
+    def to_dict(self):
+        payload = {"error": self.message, "code": self.code}
+        payload.update(self.details)
+        return payload
+
 
 def trim_top_whitespace(img):
-    """Trim blank rows above content to reduce leading white space."""
+    """Optionally trim blank rows by shifting content up while preserving canvas size."""
     if not AUTO_TRIM_TOP_WHITESPACE:
         return img
 
-    mask = img.point(lambda p: 255 if p < WHITE_THRESHOLD else 0, '1')
+    mask = img.point(lambda p: 255 if p < WHITE_THRESHOLD else 0, "1")
     bbox = mask.getbbox()
     if not bbox:
         return img
@@ -41,7 +145,14 @@ def trim_top_whitespace(img):
 
     trim_px = min(top, MAX_TOP_TRIM_PX)
     width, height = img.size
-    return img.crop((0, trim_px, width, height))
+    if trim_px >= height:
+        return img
+
+    shifted = Image.new("L", (width, height), 255)
+    source = img.crop((0, trim_px, width, height))
+    shifted.paste(source, (0, 0))
+    return shifted
+
 
 def shift_image_horizontally(img, shift_px):
     """Shift image content left/right while keeping canvas size constant."""
@@ -50,9 +161,9 @@ def shift_image_horizontally(img, shift_px):
 
     width, height = img.size
     if abs(shift_px) >= width:
-        return Image.new('L', (width, height), 255)
+        return Image.new("L", (width, height), 255)
 
-    shifted = Image.new('L', (width, height), 255)
+    shifted = Image.new("L", (width, height), 255)
     if shift_px > 0:
         source = img.crop((0, 0, width - shift_px, height))
         shifted.paste(source, (shift_px, 0))
@@ -63,64 +174,49 @@ def shift_image_horizontally(img, shift_px):
 
     return shifted
 
+
 def image_to_tspl(image_data, x=X_OFFSET, y=Y_OFFSET, dither=True):
-    """
-    Convert image to TSPL BITMAP command with raw binary data
-    Fixed: proper padding, inverted colors, gap disabled for perforated labels
-    """
-    img = Image.open(io.BytesIO(image_data)).convert('L')
-    
+    """Convert image to TSPL BITMAP command with raw binary data."""
+    img = Image.open(io.BytesIO(image_data)).convert("L")
     img = trim_top_whitespace(img)
     img = shift_image_horizontally(img, HORIZONTAL_SHIFT_PX)
 
-    # Keep original size, don't resize
     width, height = img.size
-    
-    # Invert image (printer expects inverted)
-    img = Image.eval(img, lambda x: 255 - x)
-    
-    # Apply dithering
+    img = Image.eval(img, lambda p: 255 - p)
+
     if dither:
-        img = img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+        img = img.convert("1", dither=Image.Dither.FLOYDSTEINBERG)
     else:
-        img = img.point(lambda x: 0 if x < 128 else 255, '1')
-    
-    # Calculate proper byte width (TSPL requires byte alignment)
+        img = img.point(lambda p: 0 if p < 128 else 255, "1")
+
     width_bytes = (width + 7) // 8
     padded_width = width_bytes * 8
-    
     pixels = list(img.getdata())
-    
-    # Build bitmap bytes - MSB first, padding pixels are white (0)
+
     bitmap_bytes = bytearray()
-    
     for row in range(height):
         row_start = row * width
         for byte_col in range(0, padded_width, 8):
             byte_val = 0
             for bit in range(8):
                 pixel_col = byte_col + bit
-                if pixel_col < width:  # Real pixel
-                    pixel_val = pixels[row_start + pixel_col]
-                    if pixel_val < 128:  # Black
-                        byte_val |= (1 << (7 - bit))
-                # Padding pixels stay 0 (white)
+                if pixel_col < width and pixels[row_start + pixel_col] < 128:
+                    byte_val |= 1 << (7 - bit)
             bitmap_bytes.append(byte_val)
-    
+
     header = f"BITMAP {x},{y},{width_bytes},{height},0,"
-    
     return header, bytes(bitmap_bytes)
+
 
 class LabelTemplates:
     @staticmethod
     def standard_shipping(order, customer, address, barcode=None, date_str=None):
-        """Standard shipping label"""
         if date_str is None:
-            date_str = datetime.now().strftime('%Y-%m-%d')
-        
+            date_str = datetime.now().strftime("%Y-%m-%d")
+
         tspl = [
             f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
-            "GAP 3mm,0mm",  # Enable gap sensing for label media
+            "GAP 3mm,0mm",
             "CLS",
             "BOX 40,20,400,100,4",
             'TEXT 50,35,"3",0,1,1,"ATK FABRICATION CO."',
@@ -132,27 +228,31 @@ class LabelTemplates:
             'TEXT 50,250,"2",0,1,1,"SHIP TO:"',
             'TEXT 70,300,"2",0,1,1,""',
         ]
-        
-        addr_lines = address.split(',') if ',' in address else [address[i:i+30] for i in range(0, min(len(address), 90), 30)]
+
+        if "," in address:
+            addr_lines = address.split(",")
+        else:
+            addr_lines = [address[i:i + 30] for i in range(0, min(len(address), 90), 30)]
         y = 330
         for line in addr_lines[:3]:
             safe_line = line.strip().replace('"', '\\"')[:35]
             tspl.append(f'TEXT 70,{y},"2",0,1,1,"{safe_line}"')
             y += 50
-        
+
         bc = barcode if barcode else order
-        tspl.extend([
-            "BAR 40,500,360,2",
-            f'BARCODE 80,520,"128",80,1,0,2,2,"{bc[:25]}"',
-            f'TEXT 80,620,"1",0,1,1,"{bc[:25]}"',
-        ])
-        
+        tspl.extend(
+            [
+                "BAR 40,500,360,2",
+                f'BARCODE 80,520,"128",80,1,0,2,2,"{bc[:25]}"',
+                f'TEXT 80,620,"1",0,1,1,"{bc[:25]}"',
+            ]
+        )
+
         tspl.append("PRINT 1,1")
         return "\n".join(tspl)
-    
+
     @staticmethod
     def simple_text(lines, title="ATK FABRICATION"):
-        """Simple text-only label"""
         tspl = [
             f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
             "GAP 3mm,0mm",
@@ -167,10 +267,9 @@ class LabelTemplates:
             y += 55
         tspl.append("PRINT 1,1")
         return "\n".join(tspl)
-    
+
     @staticmethod
     def packing_list(order, items, customer):
-        """Internal packing list"""
         tspl = [
             f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm",
             "GAP 3mm,0mm",
@@ -189,118 +288,205 @@ class LabelTemplates:
         tspl.append("PRINT 1,1")
         return "\n".join(tspl)
 
+
+def _write_printer(payload):
+    device_path = current_printer_device()
+    if not device_path:
+        raise PrinterWriteError(
+            "printer_device_missing",
+            "No thermal printer device found",
+            status=503,
+            device_candidates=PRINTER_DEVICE_CANDIDATES,
+        )
+
+    try:
+        with open(device_path, "wb") as device:
+            device.write(payload)
+        return device_path
+    except FileNotFoundError as exc:
+        raise PrinterWriteError(
+            "printer_device_missing",
+            str(exc),
+            status=503,
+            device_path=device_path,
+            device_candidates=PRINTER_DEVICE_CANDIDATES,
+        ) from exc
+    except PermissionError as exc:
+        raise PrinterWriteError(
+            "printer_device_permission_denied",
+            str(exc),
+            status=500,
+            device_path=device_path,
+        ) from exc
+    except OSError as exc:
+        raise PrinterWriteError(
+            "printer_device_io_error",
+            str(exc),
+            status=500,
+            device_path=device_path,
+            errno=getattr(exc, "errno", None),
+        ) from exc
+
+
 def send_tspl(tspl_data):
-    """Write TSPL data to printer"""
-    with open('/dev/usb/lp0', 'wb') as f:
-        f.write((tspl_data + "\n").encode())
-    return True
+    return _write_printer((tspl_data + "\n").encode())
+
 
 def send_tspl_bytes(tspl_bytes):
-    """Write raw TSPL bytes to printer"""
-    with open('/dev/usb/lp0', 'wb') as f:
-        f.write(tspl_bytes)
-    return True
+    return _write_printer(tspl_bytes)
 
-class Handler(http.server.SimpleHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
-    
-    def send_json(self, data, code=200):
-        self.send_response(code)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
-    
-    def do_POST(self):
-        content_len = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_len)
-        
-        try:
-            if self.path == '/print':
-                lines = body.decode('utf-8').strip().split('\n')
-                tspl = LabelTemplates.simple_text(lines)
-                send_tspl(tspl)
-                self.send_json({"status": "printed", "lines": len(lines), "template": "simple"})
-            
-            elif self.path == '/shipping':
-                parts = body.decode('utf-8').strip().split('|')
-                if len(parts) >= 3:
-                    order, customer, address = parts[0], parts[1], parts[2]
-                    barcode = parts[3] if len(parts) > 3 else order
-                    tspl = LabelTemplates.standard_shipping(order, customer, address, barcode)
-                    send_tspl(tspl)
-                    self.send_json({"status": "printed", "order": order, "template": "shipping"})
-                else:
-                    self.send_json({"error": "Format: order|customer|address|barcode"}, 400)
-            
-            elif self.path == '/packing':
-                parts = body.decode('utf-8').strip().split('|')
-                if len(parts) >= 3:
-                    order, customer = parts[0], parts[1]
-                    items = parts[2].split(',')
-                    tspl = LabelTemplates.packing_list(order, items, customer)
-                    send_tspl(tspl)
-                    self.send_json({"status": "printed", "order": order, "template": "packing", "items": len(items)})
-                else:
-                    self.send_json({"error": "Format: order|customer|item1,item2,item3"}, 400)
-            
-            elif self.path == '/raw':
-                send_tspl(body.decode('utf-8'))
-                self.send_json({"status": "printed", "mode": "raw"})
-            
-            elif self.path == '/image':
-                try:
-                    image_data = base64.b64decode(body)
-                    header, bitmap_data = image_to_tspl(image_data)
-                    
-                    output = bytearray()
-                    output.extend(f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm\n".encode())
-                    output.extend(b"GAP 3mm,0mm\n")  # Enable gap sensing for label media
-                    output.extend(b"CLS\n")
-                    output.extend(header.encode('ascii'))
-                    output.extend(bitmap_data)
-                    output.extend(b"\nPRINT 1,1\n")
-                    
-                    send_tspl_bytes(output)
-                    self.send_json({"status": "printed", "template": "image"})
-                except Exception as e:
-                    self.send_json({"error": f"Image processing failed: {str(e)}"}, 500)
-            
-            else:
-                self.send_error(404)
-        
-        except Exception as e:
-            self.send_json({"error": str(e)}, 500)
-    
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        help_text = f"""Thermal Label Printer API - ATK Fabrication
 
-LABEL SIZE: {LABEL_WIDTH_MM}mm x {LABEL_HEIGHT_MM}mm (4" x 6")
+def help_text():
+    return f"""Thermal Label Printer API - ATK Fabrication
+
+LABEL SIZE: {LABEL_WIDTH_MM}mm x {LABEL_HEIGHT_MM}mm (4\" x 6\")
 GAP DETECTION: Enabled (3mm) for label media
+DEVICE CANDIDATES: {", ".join(PRINTER_DEVICE_CANDIDATES)}
+AUTO TRIM TOP WHITESPACE: {AUTO_TRIM_TOP_WHITESPACE}
 
 ENDPOINTS:
-POST /print      - Simple text (body: "Line 1\nLine 2")
-POST /shipping   - Shipping label (body: "order|customer|address|barcode")  
-POST /packing    - Packing list (body: "order|customer|item1,item2,item3")
-POST /raw        - Raw TSPL commands
-POST /image      - Base64-encoded PNG/JPG image
+GET  /healthz     - Service + printer device status
+POST /print       - Simple text (body: "Line 1\\nLine 2")
+POST /shipping    - Shipping label (body: "order|customer|address|barcode")
+POST /packing     - Packing list (body: "order|customer|item1,item2,item3")
+POST /raw         - Raw TSPL commands
+POST /image       - Base64-encoded PNG/JPG image
 
 EXAMPLES:
 curl -X POST http://thermal.local:8765/shipping -d "54321|Jane Doe|123 Oak Ave, Detroit|ORDER54321"
-
-curl -X POST http://thermal.local:8765/packing -d "99999|John Smith|Widget A,Widget B,Widget C"
-
-# Print image (base64 encoded)
 curl -X POST http://thermal.local:8765/image -d "$(base64 -i logo.png)"
 """
-        self.wfile.write(help_text.encode())
 
-if __name__ == '__main__':
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("0.0.0.0", PORT), Handler) as httpd:
-        print(f"Label printer server on port {PORT}")
-        print(f"Label size: {LABEL_WIDTH_MM}mm x {LABEL_HEIGHT_MM}mm")
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        log_event("info", "http_request", client=self.client_address[0], path=self.path, detail=(fmt % args))
+
+    def send_json(self, data, code=200):
+        payload = json.dumps(data).encode()
+        self.send_response(code)
+        self.send_header("Content-type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def send_text(self, text, code=200):
+        payload = text.encode()
+        self.send_response(code)
+        self.send_header("Content-type", "text/plain")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _decode_body_text(self, body):
+        try:
+            return body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Request body must be UTF-8") from exc
+
+    def do_POST(self):
+        route = urlparse(self.path).path
+        content_len = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_len)
+
+        try:
+            if route == "/print":
+                lines = self._decode_body_text(body).strip().split("\n")
+                device_path = send_tspl(LabelTemplates.simple_text(lines))
+                self.send_json({"status": "printed", "lines": len(lines), "template": "simple", "device_path": device_path})
+                return
+
+            if route == "/shipping":
+                parts = self._decode_body_text(body).strip().split("|")
+                if len(parts) < 3:
+                    self.send_json({"error": "Format: order|customer|address|barcode", "code": "bad_request"}, 400)
+                    return
+                order, customer, address = parts[0], parts[1], parts[2]
+                barcode = parts[3] if len(parts) > 3 else order
+                device_path = send_tspl(LabelTemplates.standard_shipping(order, customer, address, barcode))
+                self.send_json({"status": "printed", "order": order, "template": "shipping", "device_path": device_path})
+                return
+
+            if route == "/packing":
+                parts = self._decode_body_text(body).strip().split("|")
+                if len(parts) < 3:
+                    self.send_json({"error": "Format: order|customer|item1,item2,item3", "code": "bad_request"}, 400)
+                    return
+                order, customer = parts[0], parts[1]
+                items = parts[2].split(",")
+                device_path = send_tspl(LabelTemplates.packing_list(order, items, customer))
+                self.send_json(
+                    {"status": "printed", "order": order, "template": "packing", "items": len(items), "device_path": device_path}
+                )
+                return
+
+            if route == "/raw":
+                device_path = send_tspl(self._decode_body_text(body))
+                self.send_json({"status": "printed", "mode": "raw", "device_path": device_path})
+                return
+
+            if route == "/image":
+                try:
+                    image_data = base64.b64decode(body, validate=False)
+                    header, bitmap_data = image_to_tspl(image_data)
+                    output = bytearray()
+                    output.extend(f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm\n".encode())
+                    output.extend(b"GAP 3mm,0mm\n")
+                    output.extend(b"CLS\n")
+                    output.extend(header.encode("ascii"))
+                    output.extend(bitmap_data)
+                    output.extend(b"\nPRINT 1,1\n")
+                    device_path = send_tspl_bytes(output)
+                    self.send_json({"status": "printed", "template": "image", "device_path": device_path})
+                except PrinterWriteError:
+                    raise
+                except Exception as exc:
+                    self.send_json(
+                        {"error": f"Image processing failed: {exc}", "code": "image_processing_failed"},
+                        500,
+                    )
+                return
+
+            self.send_error(404)
+
+        except PrinterWriteError as exc:
+            log_event("error", "printer_write_failed", route=route, **exc.to_dict())
+            self.send_json(exc.to_dict(), exc.status)
+        except ValueError as exc:
+            self.send_json({"error": str(exc), "code": "bad_request"}, 400)
+        except Exception as exc:
+            log_event("error", "unhandled_exception", route=route, error=str(exc), traceback=traceback.format_exc())
+            self.send_json({"error": "Internal server error", "code": "internal_error"}, 500)
+
+    def do_GET(self):
+        route = urlparse(self.path).path
+        if route == "/healthz":
+            health = printer_health()
+            health["status"] = "ok" if health["printer_connected"] else "degraded"
+            self.send_json(health, 200)
+            return
+
+        if route == "/":
+            self.send_text(help_text(), 200)
+            return
+
+        self.send_error(404)
+
+
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+if __name__ == "__main__":
+    with ThreadedTCPServer(("0.0.0.0", PORT), Handler) as httpd:
+        log_event(
+            "info",
+            "server_start",
+            port=PORT,
+            label_width_mm=LABEL_WIDTH_MM,
+            label_height_mm=LABEL_HEIGHT_MM,
+            device_candidates=PRINTER_DEVICE_CANDIDATES,
+            auto_trim_top_whitespace=AUTO_TRIM_TOP_WHITESPACE,
+        )
         httpd.serve_forever()

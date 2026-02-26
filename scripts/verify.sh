@@ -20,6 +20,11 @@ echo "Thermal API banner:"
 curl -fsS http://localhost:8765/ | sed -n '1,8p'
 echo "---"
 
+echo "Health endpoint:"
+curl -fsS http://localhost:8765/healthz
+echo
+echo "---"
+
 echo "Queue options:"
 lpoptions -p thermal
 echo
