@@ -200,7 +200,9 @@ systemctl restart thermal-printer.service
 
 echo "[8/9] Configuring CUPS queue..."
 lpadmin -x thermal 2>/dev/null || true
-lpadmin -p thermal -E -v pdf2http://localhost:8765 -P /etc/cups/ppd/thermal.ppd
+# Use the snapshot source PPD here because deleting/recreating the queue can
+# remove /etc/cups/ppd/thermal.ppd during upgrades.
+lpadmin -p thermal -E -v pdf2http://localhost:8765 -P "$FILES_DIR/etc/cups/ppd/thermal.ppd"
 lpadmin -d thermal
 lpadmin -p thermal -o printer-is-shared=true
 lpoptions -p thermal -o PageSize=Roll4x6
