@@ -120,6 +120,9 @@ echo "[6/9] Applying service user/group..."
 sed -i "s/^User=.*/User=$TARGET_USER/" /etc/systemd/system/thermal-printer.service
 sed -i "s/^Group=.*/Group=$TARGET_GROUP/" /etc/systemd/system/thermal-printer.service
 usermod -a -G lp "$TARGET_USER" || true
+if getent group lpadmin >/dev/null 2>&1; then
+  usermod -a -G lpadmin "$TARGET_USER" || true
+fi
 
 echo "[7/9] Configuring services..."
 systemctl daemon-reload
