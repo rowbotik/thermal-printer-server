@@ -16,6 +16,13 @@ from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
+# Optional: Printer eyes (eInk display)
+try:
+    from printer_eyes import get_eyes
+    eyes = get_eyes()
+except Exception as e:
+    eyes = None
+
 
 def env_bool(name, default=False):
     raw = os.getenv(name)
@@ -466,6 +473,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except UnicodeDecodeError as exc:
             raise ValueError("Request body must be UTF-8") from exc
 
+    def _with_eyes(self, fn, focus=False):
+        """Wrap a function with eye wake/sleep animation"""
+        if eyes:
+            if focus:
+                eyes.focus()
+            else:
+                eyes.wake()
+        try:
+            return fn()
+        finally:
+            if eyes:
+                eyes.sleep()
+
     def do_POST(self):
         route = urlparse(self.path).path
         content_len = int(self.headers.get("Content-Length", 0))
@@ -473,38 +493,46 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         try:
             if route == "/print":
-                lines = self._decode_body_text(body).strip().split("\n")
-                device_path = send_tspl(LabelTemplates.simple_text(lines))
-                self.send_json({"status": "printed", "lines": len(lines), "template": "simple", "device_path": device_path})
+                def do_print():
+                    lines = self._decode_body_text(body).strip().split("\n")
+                    device_path = send_tspl(LabelTemplates.simple_text(lines))
+                    self.send_json({"status": "printed", "lines": len(lines), "template": "simple", "device_path": device_path})
+                self._with_eyes(do_print)
                 return
 
             if route == "/shipping":
-                parts = self._decode_body_text(body).strip().split("|")
-                if len(parts) < 3:
-                    self.send_json({"error": "Format: order|customer|address|barcode", "code": "bad_request"}, 400)
-                    return
-                order, customer, address = parts[0], parts[1], parts[2]
-                barcode = parts[3] if len(parts) > 3 else order
-                device_path = send_tspl(LabelTemplates.standard_shipping(order, customer, address, barcode))
-                self.send_json({"status": "printed", "order": order, "template": "shipping", "device_path": device_path})
+                def do_shipping():
+                    parts = self._decode_body_text(body).strip().split("|")
+                    if len(parts) < 3:
+                        self.send_json({"error": "Format: order|customer|address|barcode", "code": "bad_request"}, 400)
+                        return
+                    order, customer, address = parts[0], parts[1], parts[2]
+                    barcode = parts[3] if len(parts) > 3 else order
+                    device_path = send_tspl(LabelTemplates.standard_shipping(order, customer, address, barcode))
+                    self.send_json({"status": "printed", "order": order, "template": "shipping", "device_path": device_path})
+                self._with_eyes(do_shipping)
                 return
 
             if route == "/packing":
-                parts = self._decode_body_text(body).strip().split("|")
-                if len(parts) < 3:
-                    self.send_json({"error": "Format: order|customer|item1,item2,item3", "code": "bad_request"}, 400)
-                    return
-                order, customer = parts[0], parts[1]
-                items = parts[2].split(",")
-                device_path = send_tspl(LabelTemplates.packing_list(order, items, customer))
-                self.send_json(
-                    {"status": "printed", "order": order, "template": "packing", "items": len(items), "device_path": device_path}
-                )
+                def do_packing():
+                    parts = self._decode_body_text(body).strip().split("|")
+                    if len(parts) < 3:
+                        self.send_json({"error": "Format: order|customer|item1,item2,item3", "code": "bad_request"}, 400)
+                        return
+                    order, customer = parts[0], parts[1]
+                    items = parts[2].split(",")
+                    device_path = send_tspl(LabelTemplates.packing_list(order, items, customer))
+                    self.send_json(
+                        {"status": "printed", "order": order, "template": "packing", "items": len(items), "device_path": device_path}
+                    )
+                self._with_eyes(do_packing)
                 return
 
             if route == "/raw":
-                device_path = send_tspl(self._decode_body_text(body))
-                self.send_json({"status": "printed", "mode": "raw", "device_path": device_path})
+                def do_raw():
+                    device_path = send_tspl(self._decode_body_text(body))
+                    self.send_json({"status": "printed", "mode": "raw", "device_path": device_path})
+                self._with_eyes(do_raw)
                 return
 
             if route == "/rewind":
@@ -512,7 +540,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 tspl = f"BACKFEED {req['dots']}"
                 device_path = None
                 if not req["dry_run"]:
-                    device_path = send_tspl(tspl)
+                    if eyes:
+                        eyes.focus()
+                    try:
+                        device_path = send_tspl(tspl)
+                    finally:
+                        if eyes:
+                            eyes.sleep()
                 self.send_json(
                     {
                         "status": "ok" if req["dry_run"] else "printed",
@@ -529,25 +563,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
 
             if route == "/image":
-                try:
-                    image_data = base64.b64decode(body, validate=False)
-                    header, bitmap_data = image_to_tspl(image_data)
-                    output = bytearray()
-                    output.extend(f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm\n".encode())
-                    output.extend(b"GAP 3mm,0mm\n")
-                    output.extend(b"CLS\n")
-                    output.extend(header.encode("ascii"))
-                    output.extend(bitmap_data)
-                    output.extend(b"\nPRINT 1,1\n")
-                    device_path = send_tspl_bytes(output)
-                    self.send_json({"status": "printed", "template": "image", "device_path": device_path})
-                except PrinterWriteError:
-                    raise
-                except Exception as exc:
-                    self.send_json(
-                        {"error": f"Image processing failed: {exc}", "code": "image_processing_failed"},
-                        500,
-                    )
+                def do_image():
+                    try:
+                        image_data = base64.b64decode(body, validate=False)
+                        header, bitmap_data = image_to_tspl(image_data)
+                        output = bytearray()
+                        output.extend(f"SIZE {LABEL_WIDTH_MM}mm,{LABEL_HEIGHT_MM}mm\n".encode())
+                        output.extend(b"GAP 3mm,0mm\n")
+                        output.extend(b"CLS\n")
+                        output.extend(header.encode("ascii"))
+                        output.extend(bitmap_data)
+                        output.extend(b"\nPRINT 1,1\n")
+                        device_path = send_tspl_bytes(output)
+                        self.send_json({"status": "printed", "template": "image", "device_path": device_path})
+                    except PrinterWriteError:
+                        raise
+                    except Exception as exc:
+                        self.send_json(
+                            {"error": f"Image processing failed: {exc}", "code": "image_processing_failed"},
+                            500,
+                        )
+                self._with_eyes(do_image)
                 return
 
             self.send_error(404)
