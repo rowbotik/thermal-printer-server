@@ -8,8 +8,10 @@ import http.server
 import io
 import json
 import os
+import random
 import socketserver
 import sys
+import time
 import traceback
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
@@ -540,7 +542,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 tspl = f"BACKFEED {req['dots']}"
                 device_path = None
                 if not req["dry_run"]:
-                    if eyes:
+                    # 30% chance to do a suspicious sweep during rewind
+                    if eyes and random.random() < 0.3:
+                        eyes.sweep()
+                    elif eyes:
                         eyes.focus()
                     try:
                         device_path = send_tspl(tspl)
@@ -589,13 +594,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
 
         except PrinterWriteError as exc:
+            if eyes:
+                eyes.surprise()
             log_event("error", "printer_write_failed", route=route, **exc.to_dict())
             self.send_json(exc.to_dict(), exc.status)
+            if eyes:
+                time.sleep(1)
+                eyes.sleep()
         except ValueError as exc:
             self.send_json({"error": str(exc), "code": "bad_request"}, 400)
         except Exception as exc:
+            if eyes:
+                eyes.surprise()
             log_event("error", "unhandled_exception", route=route, error=str(exc), traceback=traceback.format_exc())
             self.send_json({"error": "Internal server error", "code": "internal_error"}, 500)
+            if eyes:
+                time.sleep(1)
+                eyes.sleep()
 
     def do_GET(self):
         route = urlparse(self.path).path
